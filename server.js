@@ -1,38 +1,52 @@
-// Wir importieren die WebSocket-Bibliothek
 const WebSocket = require('ws');
-
-// Render.com gibt uns den Port über eine Umgebungsvariable vor.
-// Falls wir doch lokal testen, nehmen wir als Fallback 8080.
 const port = process.env.PORT || 8080;
-
-// Wir erstellen die Server-Instanz
 const wss = new WebSocket.Server({ port: port });
 
-// Diese Funktion läuft, wenn sich ein neuer Client verbindet
+// Eine einfache Variable, um die verbundenen Spieler zu speichern.
+// Für den Anfang verbinden wir einfach die ersten beiden, die sich verbinden.
+let players = [];
+
 wss.on('connection', function connection(ws) {
   
-  console.log('Ein neuer Client hat sich verbunden!');
-  
-  // Sende eine Willkommensnachricht an den verbundenen Client
-  ws.send('Willkommen! Du bist mit dem WebSocket-Server verbunden.');
+  if (players.length >= 2) {
+    console.log('Ein dritter Spieler hat versucht, sich zu verbinden. Abgelehnt.');
+    ws.send(JSON.stringify({ type: 'error', message: 'Das Spiel ist bereits voll.' }));
+    ws.close();
+    return;
+  }
 
-  // Diese Funktion läuft, wenn eine Nachricht vom Client ankommt
+  const playerIndex = players.push(ws) - 1;
+  console.log(`Spieler ${playerIndex + 1} hat sich verbunden.`);
+
+  // Sende dem Spieler seine Nummer
+  ws.send(JSON.stringify({ type: 'welcome', playerIndex: playerIndex }));
+
   ws.on('message', function incoming(message) {
-    // Wichtig: Die Nachricht kommt als Buffer an, wir wandeln sie in Text um.
     const messageText = message.toString('utf-8');
     
-    console.log('Nachricht vom Client erhalten: %s', messageText);
+    // Wir leiten jetzt nicht mehr einfach Text weiter, sondern strukturierte Daten (JSON)
+    // Wir parsen die ankommende Nachricht
+    const data = JSON.parse(messageText);
 
-    // Wir schicken die Nachricht zurück an den Client.
-    ws.send(`Der Server hat deine Nachricht empfangen: "${messageText}"`);
+    // Finde den anderen Spieler
+    const otherPlayerIndex = 1 - playerIndex;
+    const otherPlayer = players[otherPlayerIndex];
+
+    // Leite die Nachricht nur weiter, wenn der andere Spieler existiert und verbunden ist.
+    if (otherPlayer && otherPlayer.readyState === WebSocket.OPEN) {
+      console.log(`Leite Nachricht von Spieler ${playerIndex + 1} an Spieler ${otherPlayerIndex + 1} weiter.`);
+      otherPlayer.send(JSON.stringify(data));
+    } else {
+      console.log('Anderer Spieler nicht verbunden, Nachricht wird verworfen.');
+    }
   });
 
-  // Diese Funktion läuft, wenn die Verbindung getrennt wird
   ws.on('close', () => {
-    console.log('Ein Client hat die Verbindung getrennt.');
+    console.log(`Spieler ${playerIndex + 1} hat die Verbindung getrennt.`);
+    // Entferne den Spieler aus dem Array
+    players = players.filter(p => p !== ws);
   });
   
 });
 
-// Startnachricht für das Server-Log
-console.log(`WebSocket-Server gestartet und lauscht auf Port ${port}`);
+console.log(`Intelligenter WebSocket-Server gestartet und lauscht auf Port ${port}`);
