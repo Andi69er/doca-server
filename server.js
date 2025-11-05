@@ -14,21 +14,20 @@ let gameRoom = {
 // SPIEL-LOGIK AUF DEM SERVER
 // ===================================================================
 function createInitialGameState(settings) {
+    const startScore = parseInt(settings['spiel-typ']) || 501;
     const initialPlayerState = (name) => ({
-        name: name, score: parseInt(settings['spiel-typ']), legDarts: 0, lastThrow: null, totalDarts: 0, totalScore: 0, legsWon: 0, setsWon: 0
+        name: name, score: startScore, legDarts: 0, lastThrow: null, totalDarts: 0, totalScore: 0, legsWon: 0, setsWon: 0
     });
     return {
         p1: initialPlayerState(settings['name-spieler1']),
         p2: initialPlayerState(settings['name-spieler2']),
         currentPlayer: 'p1', // Host beginnt immer
-        legStarter: 'p1',
-        setStarter: 'p1',
-        inProgress: true,
-        settings: { // Nur die relevanten Einstellungen für die UI
-            startScore: parseInt(settings['spiel-typ']),
-            distanz: settings.distanz,
-            matchModus: settings['match-modus'],
-            anzahl: parseInt(settings.anzahl)
+        legStarter: 'p1', setStarter: 'p1', inProgress: true,
+        settings: {
+            startScore: startScore, distanz: settings.distanz,
+            'check-out': settings['check-out'],
+            targetValue: parseInt(settings.anzahl) || 3,
+            matchMode: settings['match-modus']
         }
     };
 }
@@ -39,28 +38,42 @@ function processScore(gameState, score) {
     const newScore = player.score - score;
     const isBust = newScore < 0 || (newScore === 1 && gameState.settings['check-out'] !== 'Single Out');
 
-    player.legDarts += 3;
-    player.totalDarts += 3;
+    player.legDarts += 3; player.totalDarts += 3;
+    gameState.legJustFinished = false; gameState.matchJustFinished = false;
 
     if (isBust) {
         player.lastThrow = `BUST (${score})`;
+        // Score bleibt gleich, wird nicht zurückgesetzt
     } else {
         player.score = newScore;
         player.lastThrow = score;
         player.totalScore += score;
     }
 
-    // Sieg-Logik (vereinfacht für den Anfang)
     if (newScore === 0 && !isBust) {
         player.legsWon++;
-        gameState.legJustFinished = true; // Flag für Sound-Effekte
-        // ... (komplette Leg/Set/Match-Logik kommt hier später)
+        gameState.legJustFinished = true;
+        
+        let target = gameState.settings.targetValue;
+        if (gameState.settings.matchMode === 'best-of') {
+            target = Math.floor(target / 2) + 1;
+        }
+
+        if (player.legsWon >= target) {
+            gameState.matchJustFinished = true;
+            gameState.inProgress = false;
+        } else {
+            // Nächstes Leg vorbereiten
+            gameState.p1.score = gameState.settings.startScore;
+            gameState.p2.score = gameState.settings.startScore;
+            gameState.p1.legDarts = 0; gameState.p2.legDarts = 0;
+            gameState.legStarter = gameState.legStarter === 'p1' ? 'p2' : 'p1';
+            gameState.currentPlayer = gameState.legStarter;
+        }
     } else {
-        gameState.legJustFinished = false;
+        // Spieler wechseln
+        gameState.currentPlayer = playerKey === 'p1' ? 'p2' : 'p1';
     }
-    
-    // Spieler wechseln
-    gameState.currentPlayer = playerKey === 'p1' ? 'p2' : 'p1';
     
     return gameState;
 }
@@ -69,7 +82,6 @@ function processScore(gameState, score) {
 // ===================================================================
 // SERVER-KOMMUNIKATION
 // ===================================================================
-
 function broadcast(data) {
     const message = JSON.stringify(data);
     gameRoom.players.forEach(player => {
@@ -87,53 +99,41 @@ wss.on('connection', function connection(ws) {
     }
 
     const playerIndex = gameRoom.players.push({ ws }) - 1;
-    const playerKey = `p${playerIndex + 1}`;
     console.log(`Spieler ${playerIndex + 1} verbunden.`);
     ws.send(JSON.stringify({ type: 'welcome', playerIndex: playerIndex }));
 
     ws.on('message', function incoming(message) {
         const data = JSON.parse(message.toString('utf-8'));
-        const sourcePlayer = gameRoom.players.find(p => p.ws === ws);
+        const sourcePlayerKey = `p${playerIndex + 1}`;
 
-        // WebRTC-Nachrichten direkt an den anderen Spieler weiterleiten
         if (['offer', 'answer', 'candidate'].includes(data.type)) {
             const otherPlayer = gameRoom.players.find(p => p.ws !== ws);
-            if (otherPlayer && otherPlayer.ws.readyState === WebSocket.OPEN) {
-                otherPlayer.ws.send(JSON.stringify(data));
-            }
+            if (otherPlayer) otherPlayer.ws.send(JSON.stringify(data));
             return;
         }
 
-        // Spiel-Logik (darf nur vom Host/Spieler 1 gesteuert werden)
-        if (playerIndex === 0) { // Nur Host darf das Spiel steuern
+        if (playerIndex === 0) { // Nur Host (Spieler 1) darf diese Aktionen ausführen
             switch(data.type) {
                 case 'settings_update':
                     gameRoom.gameSettings = data.settings;
-                    // An den Gast weiterleiten
                     const guest = gameRoom.players[1];
-                    if (guest && guest.ws.readyState === WebSocket.OPEN) {
-                        guest.ws.send(JSON.stringify({ type: 'settings_update', settings: data.settings }));
-                    }
+                    if (guest) guest.ws.send(JSON.stringify({ type: 'settings_update', settings: data.settings }));
                     break;
-                
                 case 'start_game':
                     if (gameRoom.gameSettings) {
                         gameRoom.gameState = createInitialGameState(gameRoom.gameSettings);
                         broadcast({ type: 'start_game', gameState: gameRoom.gameState });
                     }
                     break;
-                
                 case 'new_game':
-                     gameRoom.gameState = null;
-                     gameRoom.gameSettings = null;
+                     gameRoom.gameState = null; gameRoom.gameSettings = null;
                      broadcast({ type: 'new_game' });
                      break;
             }
         }
         
-        // Score-Eingabe (darf nur der aktive Spieler)
         if (data.type === 'submit_score') {
-            if (gameRoom.gameState && gameRoom.gameState.currentPlayer === playerKey) {
+            if (gameRoom.gameState && gameRoom.gameState.currentPlayer === sourcePlayerKey) {
                 gameRoom.gameState = processScore(gameRoom.gameState, data.score);
                 broadcast({ type: 'game_update', gameState: gameRoom.gameState });
             }
@@ -143,16 +143,13 @@ wss.on('connection', function connection(ws) {
     ws.on('close', () => {
         console.log(`Spieler ${playerIndex + 1} hat die Verbindung getrennt.`);
         gameRoom.players = gameRoom.players.filter(p => p.ws !== ws);
-        // Spiel zurücksetzen, wenn ein Spieler geht
-        if (gameRoom.players.length < 2) {
-            gameRoom.gameState = null;
-            gameRoom.gameSettings = null;
-            // Informiere den verbleibenden Spieler
-            if (gameRoom.players.length === 1) {
+        if (gameRoom.players.length < 2 && gameRoom.gameState) { // Spiel nur zurücksetzen, wenn es lief
+            gameRoom.gameState = null; gameRoom.gameSettings = null;
+            if (gameRoom.players.length === 1) { // Informiere den verbleibenden Spieler
                 gameRoom.players[0].ws.send(JSON.stringify({ type: 'new_game' }));
             }
         }
     });
 });
 
-console.log(`Finaler Spiel-Server gestartet und lauscht auf Port ${port}`);
+console.log(`Finaler Spiel-Server (Version 3 - All-in-One) gestartet und lauscht auf Port ${port}`);
