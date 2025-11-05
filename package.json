@@ -1,0 +1,15 @@
+{
+  "name": "doca-websocket-server",
+  "version": "1.0.0",
+  "description": "Ein einfacher WebSocket-Server für das DOCA Webspiel.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "DOCA",
+  "license": "ISC",
+  "dependencies": {
+    "ws": "^8.17.0"
+  }
+}
