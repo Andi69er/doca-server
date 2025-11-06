@@ -81,10 +81,4 @@ wss.on('connection', ws => {
         if (gameRoom.gameState) { gameRoom.gameState = null; gameRoom.gameSettings = null; gameRoom.lastState = null; broadcast({ type: 'new_game' }); }
     });
 });
-console.log(`Stabile Spiel-Server Version 13 gestartet`);```
-
----
-
-Das ist der Rollback. Er enthält keine Statistik und kein Checkout-Modal. Aber er sollte stabil sein und der "Neues Spiel"-Button sollte jetzt zuverlässig funktionieren.
-
-Bitte teste das. Wenn diese Version stabil ist, haben wir eine felsenfeste Grundlage, auf der wir die anderen Features einzeln und sicher wieder aufbauen können.
+console.log(`Stabile Spiel-Server Version 13 gestartet`);
