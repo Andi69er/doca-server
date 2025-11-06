@@ -1,4 +1,4 @@
-// server.js - STABILE VERSION (mit Ausbullen)
+// server.js - STABILE VERSION (mit Starter-Auswahl & Ausbullen)
 
 const WebSocket = require('ws');
 const port = process.env.PORT || 8080;
@@ -8,7 +8,6 @@ let gameRoom = { players: [], gameState: null, gameSettings: null, lastState: nu
 
 function createInitialGameState(settings) {
     const startScore = parseInt(settings['spiel-typ']) || 501;
-    // Der Starter wird jetzt direkt aus den Settings übernommen, die nach dem Ausbullen gesetzt werden
     const starter = settings.starter;
     const initialPlayerState = (name) => ({ name, score: startScore, legDarts: 0, lastThrow: null, totalDarts: 0, totalScore: 0, legsWon: 0 });
     return {
@@ -50,7 +49,7 @@ function processScore(gameState, score) {
 
 function determineBullOffWinner() {
     const { p1, p2 } = gameRoom.bullOffState;
-    if (!p1 || !p2) return; // Warten, bis beide geworfen haben
+    if (!p1 || !p2) return; 
 
     const scores = { 'bullseye': 2, 'outer_bull': 1, 'miss': 0 };
     const p1Score = scores[p1];
@@ -63,7 +62,6 @@ function determineBullOffWinner() {
         gameRoom.gameSettings.starter = 'p2';
         startGameFromBullOff();
     } else {
-        // Unentschieden
         gameRoom.bullOffState = { p1: null, p2: null };
         broadcast({ type: 'bull_off_tie' });
     }
@@ -78,7 +76,7 @@ function startGameFromBullOff() {
         gameRoom.lastState = null;
         gameRoom.bullOffState = null;
         broadcast({ type: 'start_game', gameState: gameRoom.gameState });
-    }, 2500); // Kurze Pause, damit die Spieler die Nachricht lesen können
+    }, 2500);
 }
 
 function broadcast(data) { const message = JSON.stringify(data); gameRoom.players.forEach(p => { if (p.ws.readyState === WebSocket.OPEN) p.ws.send(message); }); }
@@ -95,29 +93,32 @@ wss.on('connection', ws => {
         const sourcePlayerKey = `p${playerIndex + 1}`;
         if (['offer', 'answer', 'candidate'].includes(data.type)) { gameRoom.players.find(p => p.ws !== ws)?.ws.send(JSON.stringify(data)); return; }
         
-        // Spiel-Setup und Steuerung (nur durch Spieler 1)
         if (playerIndex === 0) {
             if (data.type === 'settings_update') { gameRoom.gameSettings = data.settings; broadcast(data); }
             if (data.type === 'start_game' && gameRoom.gameSettings) {
-                gameRoom.bullOffState = { p1: null, p2: null };
-                broadcast({ type: 'bull_off_start', message: 'Bitte werft auf das Bullseye.' });
+                // NEUE LOGIK: Prüfen, welche Start-Option gewählt wurde
+                const starterOption = gameRoom.gameSettings.starter;
+                if (starterOption === 'bull') {
+                    gameRoom.bullOffState = { p1: null, p2: null };
+                    broadcast({ type: 'bull_off_start', message: 'Bitte werft auf das Bullseye.' });
+                } else {
+                    // Direktes Starten des Spiels, wenn p1 oder p2 gewählt wurde
+                    gameRoom.gameState = createInitialGameState(gameRoom.gameSettings);
+                    gameRoom.lastState = null;
+                    broadcast({ type: 'start_game', gameState: gameRoom.gameState });
+                }
             }
             if (data.type === 'new_game') { gameRoom.gameState = null; gameRoom.gameSettings = null; gameRoom.lastState = null; gameRoom.bullOffState = null; broadcast({ type: 'new_game' }); }
         }
 
-        // Ausbullen-Logik (beide Spieler)
         if (data.type === 'submit_bull_throw' && gameRoom.bullOffState) {
             gameRoom.bullOffState[sourcePlayerKey] = data.result;
             const otherPlayerThrown = sourcePlayerKey === 'p1' ? !!gameRoom.bullOffState.p2 : !!gameRoom.bullOffState.p1;
-            if(otherPlayerThrown) {
-                broadcast({ type: 'bull_off_update', message: 'Beide Spieler haben geworfen. Ergebnis wird ermittelt...' });
-            } else {
-                broadcast({ type: 'bull_off_update', message: 'Warte auf den Wurf des Gegners...' });
-            }
+            if(otherPlayerThrown) { broadcast({ type: 'bull_off_update', message: 'Beide Spieler haben geworfen. Ergebnis wird ermittelt...' }); } 
+            else { broadcast({ type: 'bull_off_update', message: 'Warte auf den Wurf des Gegners...' }); }
             determineBullOffWinner();
         }
 
-        // Spiel-Logik (nur der aktive Spieler)
         if (data.type === 'submit_score' && gameRoom.gameState?.currentPlayer === sourcePlayerKey) { gameRoom.lastState = JSON.parse(JSON.stringify(gameRoom.gameState)); gameRoom.gameState = processScore(gameRoom.gameState, data.score); broadcast({ type: 'game_update', gameState: gameRoom.gameState }); }
         if (data.type === 'undo_throw' && gameRoom.lastState && gameRoom.gameState?.currentPlayer !== sourcePlayerKey) { gameRoom.gameState = gameRoom.lastState; gameRoom.lastState = null; broadcast({ type: 'game_update', gameState: gameRoom.gameState }); }
     });
@@ -126,8 +127,9 @@ wss.on('connection', ws => {
         gameRoom.players = gameRoom.players.filter(p => p.ws !== ws);
         if (gameRoom.players.length < 2) {
             gameRoom.gameState = null; gameRoom.gameSettings = null; gameRoom.lastState = null; gameRoom.bullOffState = null;
-            if(gameRoom.players.length > 0) broadcast({ type: 'new_game' }); // Den verbleibenden Spieler zurücksetzen
+            if(gameRoom.players.length > 0) broadcast({ type: 'new_game' });
         }
     });
 });
-console.log(`Stabile Spiel-Server Version 14 (mit Ausbullen) gestartet auf Port ${port}`);
+
+console.log(`Stabile Spiel-Server Version 15 (mit Starter-Auswahl) gestartet auf Port ${port}`);
