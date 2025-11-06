@@ -1,4 +1,4 @@
-// server.js - FINALE STABILE VERSION (Webcam & Spielstart repariert)
+// server.js - STABILE VERSION (mit 3-Dart-Ausbullen)
 
 const WebSocket = require('ws');
 const port = process.env.PORT || 8080;
@@ -48,12 +48,17 @@ function processScore(gameState, score) {
 }
 
 function determineBullOffWinner() {
-    const { p1, p2 } = gameRoom.bullOffState;
-    if (!p1 || !p2) return;
+    const p1Score = gameRoom.bullOffState.p1;
+    const p2Score = gameRoom.bullOffState.p2;
 
-    const scores = { 'bullseye': 2, 'outer_bull': 1, 'miss': 0 };
-    const p1Score = scores[p1];
-    const p2Score = scores[p2];
+    if (p1Score === null || p2Score === null) return; // Warten, bis beide geworfen haben
+
+    // NEUE REGEL: Beide haben nichts getroffen -> Wiederholung
+    if (p1Score === 0 && p2Score === 0) {
+        gameRoom.bullOffState = { p1: null, p2: null };
+        broadcast({ type: 'bull_off_tie', message: 'Keine Treffer! Bitte erneut werfen.' });
+        return;
+    }
 
     if (p1Score > p2Score) {
         gameRoom.gameSettings.starter = 'p1';
@@ -62,15 +67,16 @@ function determineBullOffWinner() {
         gameRoom.gameSettings.starter = 'p2';
         startGameFromBullOff();
     } else {
+        // Unentschieden bei 25 oder 50 -> Wiederholung
         gameRoom.bullOffState = { p1: null, p2: null };
-        broadcast({ type: 'bull_off_tie' });
+        broadcast({ type: 'bull_off_tie', message: 'Gleiches Ergebnis! Bitte erneut werfen.' });
     }
 }
 
 function startGameFromBullOff() {
     const winnerName = gameRoom.gameSettings.starter === 'p1' ? gameRoom.gameSettings['name-spieler1'] : gameRoom.gameSettings['name-spieler2'];
-    broadcast({ type: 'bull_off_update', message: `${winnerName} hat das Ausbullen gewonnen und startet das Spiel!` });
-
+    broadcast({ type: 'bull_off_update', message: `${winnerName} hat das Ausbullen gewonnen!` });
+    
     setTimeout(() => {
         gameRoom.gameState = createInitialGameState(gameRoom.gameSettings);
         gameRoom.lastState = null;
@@ -95,16 +101,13 @@ wss.on('connection', ws => {
 
         if (playerIndex === 0) {
             if (data.type === 'settings_update') { gameRoom.gameSettings = data.settings; broadcast(data); }
-
             if (data.type === 'start_game' && data.settings) {
                 gameRoom.gameSettings = data.settings;
-                const starterOption = gameRoom.gameSettings.starter;
-                if (starterOption === 'bull') {
+                if (gameRoom.gameSettings.starter === 'bull') {
                     gameRoom.bullOffState = { p1: null, p2: null };
-                    broadcast({ type: 'bull_off_start', message: 'Bitte werft auf das Bullseye.' });
+                    broadcast({ type: 'bull_off_start' });
                 } else {
                     gameRoom.gameState = createInitialGameState(gameRoom.gameSettings);
-                    gameRoom.lastState = null;
                     broadcast({ type: 'start_game', gameState: gameRoom.gameState });
                 }
             }
@@ -112,10 +115,11 @@ wss.on('connection', ws => {
         }
 
         if (data.type === 'submit_bull_throw' && gameRoom.bullOffState) {
-            gameRoom.bullOffState[sourcePlayerKey] = data.result;
-            const otherPlayerThrown = sourcePlayerKey === 'p1' ? !!gameRoom.bullOffState.p2 : !!gameRoom.bullOffState.p1;
-            if(otherPlayerThrown) { broadcast({ type: 'bull_off_update', message: 'Beide Spieler haben geworfen. Ergebnis wird ermittelt...' }); }
-            else { broadcast({ type: 'bull_off_update', message: 'Warte auf den Wurf des Gegners...' }); }
+            gameRoom.bullOffState[sourcePlayerKey] = data.bestScore;
+            const otherPlayerHasThrown = sourcePlayerKey === 'p1' ? gameRoom.bullOffState.p2 !== null : gameRoom.bullOffState.p1 !== null;
+            if (otherPlayerHasThrown) {
+                broadcast({ type: 'bull_off_update', message: 'Ergebnis wird ermittelt...' });
+            }
             determineBullOffWinner();
         }
 
@@ -127,9 +131,9 @@ wss.on('connection', ws => {
         gameRoom.players = gameRoom.players.filter(p => p.ws !== ws);
         if (gameRoom.players.length < 2) {
             gameRoom.gameState = null; gameRoom.gameSettings = null; gameRoom.lastState = null; gameRoom.bullOffState = null;
-            if(gameRoom.players.length > 0) broadcast({ type: 'new_game' });
+            if (gameRoom.players.length > 0) broadcast({ type: 'new_game' });
         }
     });
 });
 
-console.log(`Finale stabile Server-Version gestartet auf Port ${port}`);
+console.log(`Stabile Spiel-Server Version 18 (mit 3-Dart-Ausbullen) gestartet auf Port ${port}`);
