@@ -1,4 +1,4 @@
-// server.js - STABILE VERSION (mit Starter-Auswahl & Ausbullen)
+// server.js - STABILE VERSION (Bugfix für Spielstart-Button)
 
 const WebSocket = require('ws');
 const port = process.env.PORT || 8080;
@@ -95,20 +95,28 @@ wss.on('connection', ws => {
         
         if (playerIndex === 0) {
             if (data.type === 'settings_update') { gameRoom.gameSettings = data.settings; broadcast(data); }
-            if (data.type === 'start_game' && gameRoom.gameSettings) {
-                // NEUE LOGIK: Prüfen, welche Start-Option gewählt wurde
+            
+            // KORREKTUR: Verwende die Einstellungen aus der Nachricht, nicht aus dem Speicher
+            if (data.type === 'start_game' && data.settings) {
+                gameRoom.gameSettings = data.settings; // Speichere die finalen Einstellungen
                 const starterOption = gameRoom.gameSettings.starter;
+
                 if (starterOption === 'bull') {
                     gameRoom.bullOffState = { p1: null, p2: null };
                     broadcast({ type: 'bull_off_start', message: 'Bitte werft auf das Bullseye.' });
                 } else {
-                    // Direktes Starten des Spiels, wenn p1 oder p2 gewählt wurde
                     gameRoom.gameState = createInitialGameState(gameRoom.gameSettings);
                     gameRoom.lastState = null;
                     broadcast({ type: 'start_game', gameState: gameRoom.gameState });
                 }
             }
-            if (data.type === 'new_game') { gameRoom.gameState = null; gameRoom.gameSettings = null; gameRoom.lastState = null; gameRoom.bullOffState = null; broadcast({ type: 'new_game' }); }
+            if (data.type === 'new_game') { 
+                gameRoom.gameState = null; 
+                gameRoom.gameSettings = null; // Zurücksetzen ist weiterhin sicher
+                gameRoom.lastState = null; 
+                gameRoom.bullOffState = null; 
+                broadcast({ type: 'new_game' }); 
+            }
         }
 
         if (data.type === 'submit_bull_throw' && gameRoom.bullOffState) {
@@ -132,4 +140,4 @@ wss.on('connection', ws => {
     });
 });
 
-console.log(`Stabile Spiel-Server Version 15 (mit Starter-Auswahl) gestartet auf Port ${port}`);
+console.log(`Stabile Spiel-Server Version 16 (mit Spielstart-Fix) gestartet auf Port ${port}`);
