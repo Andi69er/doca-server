@@ -1,4 +1,4 @@
-// server.js - STABILE VERSION (mit 3-Dart-Ausbullen)
+// server.js - STABILE VERSION (mit korrekter "früher ist besser" Ausbull-Logik)
 
 const WebSocket = require('ws');
 const port = process.env.PORT || 8080;
@@ -48,28 +48,35 @@ function processScore(gameState, score) {
 }
 
 function determineBullOffWinner() {
-    const p1Score = gameRoom.bullOffState.p1;
-    const p2Score = gameRoom.bullOffState.p2;
+    const p1_throws = gameRoom.bullOffState.p1_throws;
+    const p2_throws = gameRoom.bullOffState.p2_throws;
 
-    if (p1Score === null || p2Score === null) return; // Warten, bis beide geworfen haben
+    if (!p1_throws || !p2_throws) return; // Warten, bis beide geworfen haben
 
-    // NEUE REGEL: Beide haben nichts getroffen -> Wiederholung
-    if (p1Score === 0 && p2Score === 0) {
-        gameRoom.bullOffState = { p1: null, p2: null };
-        broadcast({ type: 'bull_off_tie', message: 'Keine Treffer! Bitte erneut werfen.' });
-        return;
+    let winner = null;
+
+    // KORREKTE LOGIK: Vergleiche jeden Dart einzeln in der Reihenfolge
+    for (let i = 0; i < 3; i++) {
+        if (p1_throws[i] > p2_throws[i]) {
+            winner = 'p1';
+            break; // Gewinner gefunden, Schleife abbrechen
+        }
+        if (p2_throws[i] > p1_throws[i]) {
+            winner = 'p2';
+            break; // Gewinner gefunden, Schleife abbrechen
+        }
     }
 
-    if (p1Score > p2Score) {
-        gameRoom.gameSettings.starter = 'p1';
-        startGameFromBullOff();
-    } else if (p2Score > p1Score) {
-        gameRoom.gameSettings.starter = 'p2';
+    if (winner) {
+        gameRoom.gameSettings.starter = winner;
         startGameFromBullOff();
     } else {
-        // Unentschieden bei 25 oder 50 -> Wiederholung
-        gameRoom.bullOffState = { p1: null, p2: null };
-        broadcast({ type: 'bull_off_tie', message: 'Gleiches Ergebnis! Bitte erneut werfen.' });
+        // Dieser Fall tritt nur ein, wenn die Serien exakt identisch sind (z.B. [0,25,0] vs [0,25,0])
+        const totalScore = p1_throws.reduce((a, b) => a + b, 0);
+        const message = totalScore === 0 ? 'Keine Treffer! Bitte erneut werfen.' : 'Gleiches Ergebnis! Bitte erneut werfen.';
+        
+        gameRoom.bullOffState = { p1_throws: null, p2_throws: null };
+        broadcast({ type: 'bull_off_tie', message: message });
     }
 }
 
@@ -104,7 +111,8 @@ wss.on('connection', ws => {
             if (data.type === 'start_game' && data.settings) {
                 gameRoom.gameSettings = data.settings;
                 if (gameRoom.gameSettings.starter === 'bull') {
-                    gameRoom.bullOffState = { p1: null, p2: null };
+                    // KORREKTUR: State für Wurf-Arrays initialisieren
+                    gameRoom.bullOffState = { p1_throws: null, p2_throws: null };
                     broadcast({ type: 'bull_off_start' });
                 } else {
                     gameRoom.gameState = createInitialGameState(gameRoom.gameSettings);
@@ -115,8 +123,9 @@ wss.on('connection', ws => {
         }
 
         if (data.type === 'submit_bull_throw' && gameRoom.bullOffState) {
-            gameRoom.bullOffState[sourcePlayerKey] = data.bestScore;
-            const otherPlayerHasThrown = sourcePlayerKey === 'p1' ? gameRoom.bullOffState.p2 !== null : gameRoom.bullOffState.p1 !== null;
+            // KORREKTUR: Speichere das gesamte Wurf-Array
+            gameRoom.bullOffState[`${sourcePlayerKey}_throws`] = data.throws;
+            const otherPlayerHasThrown = sourcePlayerKey === 'p1' ? !!gameRoom.bullOffState.p2_throws : !!gameRoom.bullOffState.p1_throws;
             if (otherPlayerHasThrown) {
                 broadcast({ type: 'bull_off_update', message: 'Ergebnis wird ermittelt...' });
             }
@@ -136,4 +145,4 @@ wss.on('connection', ws => {
     });
 });
 
-console.log(`Stabile Spiel-Server Version 18 (mit 3-Dart-Ausbullen) gestartet auf Port ${port}`);
+console.log(`Stabile Spiel-Server Version 19 (mit korrekter Ausbull-Logik) gestartet auf Port ${port}`);
