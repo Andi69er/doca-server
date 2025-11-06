@@ -5,7 +5,7 @@ const port = process.env.PORT || 8080;
 const wss = new WebSocket.Server({ port: port });
 
 let gameRoom = {
-    players: [], gameState: null, gameSettings: null, history: [] // NEU: History für "Wurf zurück"
+    players: [], gameState: null, gameSettings: null, history: []
 };
 
 function createInitialGameState(settings) {
@@ -14,7 +14,6 @@ function createInitialGameState(settings) {
     return {
         p1: initialPlayerState(settings['name-spieler1']),
         p2: initialPlayerState(settings['name-spieler2']),
-        // FEATURE: Wer fängt an?
         currentPlayer: settings.starter || 'p1',
         legStarter: settings.starter || 'p1',
         setStarter: settings.starter || 'p1',
@@ -92,7 +91,7 @@ wss.on('connection', ws => {
                 case 'start_game':
                     if (gameRoom.gameSettings) {
                         gameRoom.gameState = createInitialGameState(gameRoom.gameSettings);
-                        gameRoom.history = []; // History bei Spielstart leeren
+                        gameRoom.history = [];
                         broadcast({ type: 'start_game', gameState: gameRoom.gameState });
                     }
                     break;
@@ -105,18 +104,16 @@ wss.on('connection', ws => {
 
         if (data.type === 'submit_score') {
             if (gameRoom.gameState && gameRoom.gameState.currentPlayer === sourcePlayerKey) {
-                gameRoom.history.push(JSON.parse(JSON.stringify(gameRoom.gameState))); // Speichere Zustand VOR dem Wurf
+                gameRoom.history.push(JSON.parse(JSON.stringify(gameRoom.gameState)));
                 gameRoom.gameState = processScore(gameRoom.gameState, data.score);
                 broadcast({ type: 'game_update', gameState: gameRoom.gameState });
             }
         }
         
-        // BUGFIX: "Wurf zurück" Logik
         if (data.type === 'undo_throw') {
             if (gameRoom.gameState && gameRoom.history.length > 0) {
-                 // Nur der Spieler, der NICHT dran ist, kann den letzten Wurf zurücknehmen
                 if (gameRoom.gameState.currentPlayer !== sourcePlayerKey) {
-                    gameRoom.gameState = gameRoom.history.pop(); // Hole letzten Zustand
+                    gameRoom.gameState = gameRoom.history.pop();
                     broadcast({ type: 'game_update', gameState: gameRoom.gameState });
                 }
             }
