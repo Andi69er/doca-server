@@ -1,15 +1,17 @@
 {
-  "name": "doca-websocket-server",
+  "name": "doca-webdarts-server",
   "version": "1.0.0",
-  "description": "Ein einfacher WebSocket-Server für das DOCA Webspiel.",
+  "description": "WebSocket Server für DOCA WebDarts",
+  "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
-  "keywords": [],
-  "author": "DOCA",
-  "license": "ISC",
   "dependencies": {
-    "ws": "^8.17.0"
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
