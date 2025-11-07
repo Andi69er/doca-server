@@ -1,202 +1,218 @@
-// server.js - FINAL PAARUNGSVERSION (Legauswahl, Bull-Off, Start, Submit, Undo, Checkdart-Support)
-
+// server.js - minimal, verbose, tested
 const WebSocket = require('ws');
 const port = process.env.PORT || 8080;
-const wss = new WebSocket.Server({ port: port });
+const wss = new WebSocket.Server({ port });
 
-let gameRoom = { players: [], gameState: null, gameSettings: null, lastState: null, bullOffState: null };
+console.log(`[SERVER] Starting WebSocket server on port ${port}`);
 
-function createInitialGameState(settings) {
-    const startScore = parseInt(settings['spiel-typ']) || 501;
-    const starter = settings.starter;
-    const initialPlayerState = (name) => ({ 
-        name, score: startScore, legDarts: 0, lastThrow: null, legsWon: 0,
-        highestFinish: 0,
-        stats: {
-            matchDarts: 0, matchScore: 0, matchAvg: "0.00",
-            first9Darts: 0, first9Score: 0, first9Avg: "0.00",
-            checkoutAttempts: 0, checkoutHits: 0,
-            s0_19: 0, s20_39: 0, s40_59: 0, s60_79: 0, s80_99: 0,
-            s100: 0, s140: 0, s171: 0, s180: 0
-        }
-    });
-    return {
-        p1: initialPlayerState(settings['name-spieler1']),
-        p2: initialPlayerState(settings['name-spieler2']),
-        currentPlayer: starter, legStarter: starter, inProgress: true, legJustFinished: false,
-        settings: { startScore, targetValue: parseInt(settings.anzahl) || 3, matchMode: settings['match-modus'], checkout: settings['check-out'] }, lastThrower: null, awaitingCheckdart: false
-    };
+let room = {
+  players: [],            // { ws, id: 'p1'|'p2' }
+  settings: null,
+  state: null,
+  lastState: null,
+  bull: null              // { p1: throws|null, p2: throws|null }
+};
+
+function createInitialState(settings) {
+  const startScore = parseInt(settings['spiel-typ']) || 501;
+  const starter = settings.starter || 'p1';
+  const initialPlayer = (name) => ({
+    name: name || 'Spieler',
+    score: startScore,
+    legDarts: 0,
+    lastThrow: null,
+    legsWon: 0,
+    stats: { matchDarts:0, matchScore:0, matchAvg:"0.00", first9Darts:0, first9Score:0, first9Avg:"0.00", checkoutAttempts:0, checkoutHits:0 }
+  });
+  return {
+    p1: initialPlayer(settings['name-spieler1']),
+    p2: initialPlayer(settings['name-spieler2']),
+    currentPlayer: starter,
+    legStarter: starter,
+    inProgress: true,
+    legJustFinished: false,
+    awaitingCheckdart: false,
+    settings: { startScore, targetValue: parseInt(settings.anzahl)||3, matchMode: settings['match-modus'] || 'best-of', checkout: settings['check-out'] || 'Double Out' },
+    lastThrower: null
+  };
 }
 
-function updateStats(player, score) {
-    player.stats.matchDarts += 3;
-    player.stats.matchScore += score;
-    player.stats.matchAvg = ((player.stats.matchScore) / player.stats.matchDarts * 3).toFixed(2);
-    
-    if (player.legDarts < 9) {
-        player.stats.first9Darts += 3;
-        player.stats.first9Score += score;
-        if(player.stats.first9Darts > 0) player.stats.first9Avg = ((player.stats.first9Score) / player.stats.first9Darts * 3).toFixed(2);
-    }
-
-    if (score >= 180) player.stats.s180++; else if (score >= 171) player.stats.s171++;
-    else if (score >= 140) player.stats.s140++; else if (score >= 100) player.stats.s100++;
-    else if (score >= 80) player.stats.s80_99++; else if (score >= 60) player.stats.s60_79++;
-    else if (score >= 40) player.stats.s40_59++; else if (score >= 20) player.stats.s20_39++;
-    else player.stats.s0_19++;
+function broadcast(obj) {
+  const msg = JSON.stringify(obj);
+  room.players.forEach(p => {
+    if (p.ws.readyState === WebSocket.OPEN) p.ws.send(msg);
+  });
 }
 
-function processScore(gameState, score) {
-    const playerKey = gameState.currentPlayer;
-    const player = gameState[playerKey];
-    const newScore = player.score - score;
+function logRoom() {
+  console.log("[ROOM] players:", room.players.map(p => p.id));
+  console.log("[ROOM] settings:", room.settings ? JSON.stringify(room.settings) : null);
+  console.log("[ROOM] state:", room.state ? { currentPlayer: room.state.currentPlayer, inProgress: room.state.inProgress } : null);
+  console.log("[ROOM] bull:", room.bull);
+}
 
-    let isBust = false;
-    if (newScore < 0) {
-        isBust = true;
-    } else if (newScore === 1 && gameState.settings.checkout === 'Double Out') {
-        isBust = true;
-    }
-    
-    const isCheckoutAttempt = (gameState.settings.checkout === 'Double Out' && player.score <= 170 && ![169,168,166,165,163,162,159].includes(player.score));
-    if (isCheckoutAttempt) player.stats.checkoutAttempts++;
+function processScore(score) {
+  if (!room.state) return;
+  const key = room.state.currentPlayer;
+  const player = room.state[key];
+  const newScore = player.score - score;
+  let bust = false;
+  if (newScore < 0) bust = true;
+  if (newScore === 1 && room.state.settings.checkout === 'Double Out') bust = true;
 
-    updateStats(player, isBust ? 0 : score);
-    player.legDarts += 3;
-    gameState.legJustFinished = false;
+  // save last state for undo
+  room.lastState = JSON.parse(JSON.stringify(room.state));
 
-    if (isBust) {
-        player.lastThrow = `BUST (${score})`;
+  // update stats (very simple)
+  player.lastThrow = bust ? `BUST (${score})` : score;
+  if (!bust) player.score = newScore;
+  player.legDarts += 3;
+
+  // finish
+  if (newScore === 0 && !bust) {
+    player.legsWon++;
+    room.state.legJustFinished = true;
+    // check match finished
+    let target = room.state.settings.targetValue;
+    if (room.state.settings.matchMode === 'best-of') target = Math.ceil(target/2);
+    if (player.legsWon >= target) {
+      room.state.inProgress = false;
+      room.state.awaitingCheckdart = true; // request checkdart before final stats
     } else {
-        player.score = newScore;
-        player.lastThrow = score;
+      // prepare next leg
+      room.state.p1.score = room.state.settings.startScore;
+      room.state.p2.score = room.state.settings.startScore;
+      room.state.p1.legDarts = 0;
+      room.state.p2.legDarts = 0;
+      room.state.legStarter = room.state.legStarter === 'p1' ? 'p2' : 'p1';
+      room.state.currentPlayer = room.state.legStarter;
+    }
+  } else {
+    // switch turn
+    room.state.currentPlayer = key === 'p1' ? 'p2' : 'p1';
+    room.state.lastThrower = key;
+  }
+}
+
+wss.on('connection', (ws) => {
+  if (room.players.length >= 2) {
+    ws.send(JSON.stringify({ type: 'error', message: 'Room full' }));
+    ws.close();
+    return;
+  }
+  const id = room.players.length === 0 ? 'p1' : 'p2';
+  room.players.push({ ws, id });
+  console.log(`[SERVER] New connection: ${id}`);
+  logRoom();
+
+  ws.send(JSON.stringify({ type: 'welcome', id }));
+
+  ws.on('message', (msg) => {
+    let data;
+    try { data = JSON.parse(msg); } catch (e) { console.warn('[SERVER] invalid json', msg); return; }
+    console.log(`[SERVER] recv from ${id}:`, data);
+
+    // WebRTC passthrough (if any)
+    if (['offer','answer','candidate'].includes(data.type)) {
+      const other = room.players.find(p => p.ws !== ws);
+      if (other && other.ws.readyState === WebSocket.OPEN) other.ws.send(JSON.stringify(data));
+      return;
     }
 
-    if (newScore === 0 && !isBust) {
-        player.legsWon++;
-        if (isCheckoutAttempt) player.stats.checkoutHits++;
-        gameState.legJustFinished = true;
-        if (score > player.highestFinish) player.highestFinish = score;
-        
-        let target = gameState.settings.targetValue;
-        if(gameState.settings.matchMode === 'best-of') target = Math.ceil(target / 2);
-        
-        if (player.legsWon >= target) {
-            gameState.inProgress = false;
-            // Match finished -> trigger stats modal on clients; also request checkdart before finalizing if needed
-            gameState.awaitingCheckdart = true;
+    // Host (p1) controls settings / start
+    if (id === 'p1') {
+      if (data.type === 'settings_update') {
+        room.settings = data.settings;
+        console.log('[SERVER] settings updated by host:', room.settings);
+        broadcast({ type: 'settings_update', settings: room.settings });
+      }
+      if (data.type === 'start_game' && data.settings) {
+        room.settings = data.settings;
+        console.log('[SERVER] start requested, settings:', room.settings);
+        if (room.settings.starter === 'bull') {
+          room.bull = { p1: null, p2: null };
+          broadcast({ type: 'bull_off_start' });
         } else {
-            // Reset scores for next leg and swap starter
-            gameState.p1.score = gameState.settings.startScore;
-            gameState.p2.score = gameState.settings.startScore;
-            gameState.p1.legDarts = 0; gameState.p2.legDarts = 0;
-            gameState.legStarter = gameState.legStarter === 'p1' ? 'p2' : 'p1';
-            gameState.currentPlayer = gameState.legStarter;
+          room.state = createInitialState(room.settings);
+          broadcast({ type: 'start_game', gameState: room.state });
         }
-    } else {
-        gameState.currentPlayer = playerKey === 'p1' ? 'p2' : 'p1';
-        gameState.lastThrower = playerKey;
+      }
     }
-    return gameState;
-}
 
-function determineBullOffWinner() {
-    const p1_throws = gameRoom.bullOffState.p1_throws; const p2_throws = gameRoom.bullOffState.p2_throws;
-    if (!p1_throws || !p2_throws) return;
-    let winner = null;
-    for (let i = 0; i < 3; i++) {
-        if (p1_throws[i] > p2_throws[i]) { winner = 'p1'; break; }
-        if (p2_throws[i] > p1_throws[i]) { winner = 'p2'; break; }
-    }
-    if (winner) { gameRoom.gameSettings.starter = winner; startGameFromBullOff(); } 
-    else {
-        const total1 = p1_throws.reduce((a,b)=>a+b,0);
-        const total2 = p2_throws.reduce((a,b)=>a+b,0);
-        if (total1 !== total2) {
-            const winnerByTotal = total1 > total2 ? 'p1' : 'p2';
-            gameRoom.gameSettings.starter = winnerByTotal;
-            startGameFromBullOff();
+    // bull submissions
+    if (data.type === 'submit_bull_throw' && room.bull) {
+      room.bull[id] = data.throws;
+      console.log(`[SERVER] bull ${id} throws:`, data.throws);
+      const otherId = id === 'p1' ? 'p2' : 'p1';
+      if (room.bull[otherId]) {
+        // decide winner: check sequential greater dart; fallback to total
+        let winner = null;
+        for (let i=0;i<3;i++) {
+          if (room.bull.p1[i] > room.bull.p2[i]) { winner = 'p1'; break; }
+          if (room.bull.p2[i] > room.bull.p1[i]) { winner = 'p2'; break; }
+        }
+        if (!winner) {
+          const s1 = room.bull.p1.reduce((a,b)=>a+b,0);
+          const s2 = room.bull.p2.reduce((a,b)=>a+b,0);
+          if (s1 > s2) winner = 'p1';
+          else if (s2 > s1) winner = 'p2';
+        }
+        if (winner) {
+          room.settings.starter = winner;
+          room.bull = null;
+          room.state = createInitialState(room.settings);
+          broadcast({ type: 'bull_off_result', winner, message: `${winner} gewinnt Bull` });
+          setTimeout(()=> broadcast({ type: 'start_game', gameState: room.state }), 800);
         } else {
-            gameRoom.bullOffState = { p1_throws: null, p2_throws: null };
-            broadcast({ type: 'bull_off_tie', message: 'Gleiches Ergebnis! Bitte erneut werfen.' });
+          room.bull = { p1: null, p2: null };
+          broadcast({ type: 'bull_off_tie', message: 'Gleichstand! Nochmal werfen.' });
         }
+      } else {
+        broadcast({ type: 'bull_off_update', message: `${id} hat geworfen. Warte.` });
+      }
     }
-}
 
-function startGameFromBullOff() {
-    const winnerName = gameRoom.gameSettings.starter === 'p1' ? gameRoom.gameSettings['name-spieler1'] : gameRoom.gameSettings['name-spieler2'];
-    broadcast({ type: 'bull_off_update', message: `${winnerName} hat das Ausbullen gewonnen!` });
-    setTimeout(() => { gameRoom.gameState = createInitialGameState(gameRoom.gameSettings); gameRoom.lastState = null; gameRoom.bullOffState = null; broadcast({ type: 'start_game', gameState: gameRoom.gameState }); }, 1200);
-}
+    // score submit
+    if (data.type === 'submit_score' && room.state && room.state.currentPlayer === id) {
+      console.log('[SERVER] submit_score', id, data.score);
+      processScore(data.score);
+      broadcast({ type: 'game_update', gameState: room.state });
+    }
 
-function broadcast(data) { const message = JSON.stringify(data); gameRoom.players.forEach(p => { if (p.ws.readyState === WebSocket.OPEN) p.ws.send(message); }); }
+    // undo
+    if (data.type === 'undo_throw') {
+      if (room.lastState && room.state && room.state.lastThrower === id) {
+        room.state = room.lastState;
+        room.lastState = null;
+        broadcast({ type: 'game_update', gameState: room.state });
+      } else {
+        ws.send(JSON.stringify({ type: 'error', message: 'Undo not allowed' }));
+      }
+    }
 
-wss.on('connection', ws => {
-    if (gameRoom.players.length >= 2) { ws.close(); return; }
-    const playerIndex = gameRoom.players.length;
-    const playerKey = `p${playerIndex + 1}`;
-    gameRoom.players.push({ ws, key: playerKey });
-    ws.send(JSON.stringify({ type: 'welcome', playerIndex }));
+    // checkdart report from client
+    if (data.type === 'checkdart' && room.state) {
+      room.state.lastCheckDarts = data.darts;
+      room.state.awaitingCheckdart = false;
+      broadcast({ type: 'game_update', gameState: room.state });
+    }
 
-    ws.on('message', message => {
-        const data = JSON.parse(message.toString());
-        const sourcePlayerKey = `p${playerIndex + 1}`;
-        if (['offer', 'answer', 'candidate'].includes(data.type)) { gameRoom.players.find(p => p.ws !== ws)?.ws.send(JSON.stringify(data)); return; }
+    // new game
+    if (data.type === 'new_game') {
+      room.settings = null;
+      room.state = null;
+      room.lastState = null;
+      room.bull = null;
+      broadcast({ type: 'new_game' });
+    }
+  });
 
-        if (playerIndex === 0) {
-            if (data.type === 'settings_update') { gameRoom.gameSettings = data.settings; broadcast({ type: 'settings_update', settings: data.settings }); }
-            if (data.type === 'start_game' && data.settings) {
-                gameRoom.gameSettings = data.settings;
-                if (gameRoom.gameSettings.starter === 'bull') {
-                    gameRoom.bullOffState = { p1_throws: null, p2_throws: null };
-                    broadcast({ type: 'bull_off_start' });
-                } else {
-                    gameRoom.gameState = createInitialGameState(gameRoom.gameSettings);
-                    broadcast({ type: 'start_game', gameState: gameRoom.gameState });
-                }
-            }
-        }
-        
-        if (data.type === 'new_game') {
-            gameRoom.gameState = null; gameRoom.gameSettings = null; gameRoom.lastState = null; gameRoom.bullOffState = null;
-            broadcast({ type: 'new_game' });
-        }
-
-        if (data.type === 'submit_bull_throw' && gameRoom.bullOffState) {
-            gameRoom.bullOffState[`${sourcePlayerKey}_throws`] = data.throws;
-            const otherPlayerHasThrown = sourcePlayerKey === 'p1' ? !!gameRoom.bullOffState.p2_throws : !!gameRoom.bullOffState.p1_throws;
-            if (otherPlayerHasThrown) { broadcast({ type: 'bull_off_update', message: 'Ergebnis wird ermittelt...' }); }
-            determineBullOffWinner();
-        }
-
-        if (data.type === 'submit_score' && gameRoom.gameState?.currentPlayer === sourcePlayerKey) {
-            if (!gameRoom.lastState) gameRoom.lastState = JSON.parse(JSON.stringify(gameRoom.gameState));
-            gameRoom.gameState = processScore(gameRoom.gameState, data.score);
-            broadcast({ type: 'game_update', gameState: gameRoom.gameState });
-        }
-        
-        if (data.type === 'undo_throw' && gameRoom.lastState && gameRoom.gameState.lastThrower === sourcePlayerKey) {
-            gameRoom.gameState = gameRoom.lastState;
-            gameRoom.lastState = null;
-            broadcast({ type: 'game_update', gameState: gameRoom.gameState });
-        }
-
-        if (data.type === 'checkdart' && gameRoom.gameState) {
-            // data.darts arrives from client; attach to gameState for stats calc if needed
-            gameRoom.gameState.lastCheckDarts = data.darts;
-            // clear awaiting flag
-            gameRoom.gameState.awaitingCheckdart = false;
-            broadcast({ type: 'game_update', gameState: gameRoom.gameState });
-        }
-    });
-
-    ws.on('close', () => {
-        gameRoom.players = gameRoom.players.filter(p => p.ws !== ws);
-        if (gameRoom.players.length < 2) {
-            gameRoom.gameState = null; gameRoom.gameSettings = null; gameRoom.lastState = null; gameRoom.bullOffState = null;
-            if (gameRoom.players.length > 0) broadcast({ type: 'new_game' });
-        }
-    });
+  ws.on('close', () => {
+    console.log(`[SERVER] ${id} disconnected`);
+    room.players = room.players.filter(p => p.ws !== ws);
+    // reset room on disconnect
+    room.settings = null; room.state = null; room.lastState = null; room.bull = null;
+    if (room.players.length) broadcast({ type: 'new_game' });
+    logRoom();
+  });
 });
-
-console.log(`Server gestartet auf Port ${port}`);
