@@ -1,4 +1,4 @@
-// server.js - FINALE STABILE VERSION 27 (ALLE FUNKTIONEN VOLLSTÄNDIG REPARIERT)
+// server.js - FINALE STABILE VERSION 28 (Undo-Logik korrigiert, Check-Darts hinzugefügt)
 
 const WebSocket = require('ws');
 const port = process.env.PORT || 8080;
@@ -15,6 +15,7 @@ function createInitialGameState(settings) {
         stats: {
             matchDarts: 0, matchScore: 0, matchAvg: "0.00",
             first9Darts: 0, first9Score: 0, first9Avg: "0.00",
+            checkoutAttempts: 0, checkoutHits: 0,
             s0_19: 0, s20_39: 0, s40_59: 0, s60_79: 0, s80_99: 0,
             s100: 0, s140: 0, s171: 0, s180: 0
         }
@@ -23,7 +24,7 @@ function createInitialGameState(settings) {
         p1: initialPlayerState(settings['name-spieler1']),
         p2: initialPlayerState(settings['name-spieler2']),
         currentPlayer: starter, legStarter: starter, inProgress: true,
-        settings: { startScore, targetValue: parseInt(settings.anzahl) || 3, matchMode: settings['match-modus'], checkout: settings['check-out'] }
+        settings: { startScore, targetValue: parseInt(settings.anzahl) || 3, matchMode: settings['match-modus'], checkout: settings['check-out'] }, lastThrower: null
     };
 }
 
@@ -45,7 +46,7 @@ function updateStats(player, score) {
     else player.stats.s0_19++;
 }
 
-function processScore(gameState, score) {
+function processScore(gameState, score, dartsUsed) {
     const playerKey = gameState.currentPlayer;
     const player = gameState[playerKey];
     const newScore = player.score - score;
@@ -56,6 +57,10 @@ function processScore(gameState, score) {
     } else if (newScore === 1 && gameState.settings.checkout === 'Double Out') {
         isBust = true;
     }
+    
+    // NEU: Checkout-Versuche für Statistik zählen
+    const isCheckoutAttempt = (gameState.settings.checkout === 'Double Out' && player.score <= 170 && player.score !== 169 && player.score !== 168 && player.score !== 166 && player.score !== 165 && player.score !== 163 && player.score !== 162 && player.score !== 159);
+    if (isCheckoutAttempt) player.stats.checkoutAttempts++;
 
     updateStats(player, isBust ? 0 : score);
     player.legDarts += 3;
@@ -70,6 +75,12 @@ function processScore(gameState, score) {
 
     if (newScore === 0 && !isBust) {
         player.legsWon++;
+        
+        // NEU: Checkout-Treffer für Statistik zählen
+        if (isCheckoutAttempt) {
+            player.stats.checkoutHits++;
+        }
+
         gameState.legJustFinished = true;
         if (score > player.highestFinish) { player.highestFinish = score; }
         
@@ -87,6 +98,7 @@ function processScore(gameState, score) {
         }
     } else {
         gameState.currentPlayer = playerKey === 'p1' ? 'p2' : 'p1';
+        gameState.lastThrower = playerKey; // Speichern, wer geworfen hat
     }
     return gameState;
 }
@@ -155,12 +167,15 @@ wss.on('connection', ws => {
         }
 
         if (data.type === 'submit_score' && gameRoom.gameState?.currentPlayer === sourcePlayerKey) {
-            gameRoom.lastState = JSON.parse(JSON.stringify(gameRoom.gameState));
-            gameRoom.gameState = processScore(gameRoom.gameState, data.score);
+            // Nur ein Backup machen, wenn es noch keins gibt (verhindert Überschreiben bei schnellen Klicks)
+            if (!gameRoom.lastState) {
+                gameRoom.lastState = JSON.parse(JSON.stringify(gameRoom.gameState));
+            }
+            gameRoom.gameState = processScore(gameRoom.gameState, data.score, data.dartsUsed);
             broadcast({ type: 'game_update', gameState: gameRoom.gameState });
         }
         
-        if (data.type === 'undo_throw' && gameRoom.lastState) {
+        if (data.type === 'undo_throw' && gameRoom.lastState && gameRoom.gameState.lastThrower === sourcePlayerKey) {
             gameRoom.gameState = gameRoom.lastState;
             gameRoom.lastState = null;
             broadcast({ type: 'game_update', gameState: gameRoom.gameState });
@@ -176,4 +191,4 @@ wss.on('connection', ws => {
     });
 });
 
-console.log(`Finale stabile Server-Version 27 (Alles repariert) gestartet auf Port ${port}`);
+console.log(`Finale stabile Server-Version 28 (Undo & Check-Darts) gestartet auf Port ${port}`);
