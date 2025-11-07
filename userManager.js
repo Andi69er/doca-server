@@ -1,38 +1,38 @@
-// =======================================
-// doca-webdarts / server/userManager.js
-// Verbindung zu doca.at Login-System
-// =======================================
-
+// userManager.js
 import fetch from "node-fetch";
 
 /**
- * Prüft die Benutzer-Session bei doca.at
- * @param {string} sid - PHPSESSID des Spielers
- * @returns {Promise<{success:boolean,user?:{id:number,username:string}}>}
+ * Prüft eine PHP-Session-ID gegen deine DOCA-PHP-API.
+ * Erwartet eine URL wie: https://www.doca.at/api/check_session.php?sid=...
+ * Die API sollte JSON zurückgeben: { success: true, user: { id:..., name:... } }
+ */
+const DOCA_SESSION_CHECK_URL = "https://www.doca.at/webservices/check_session.php";
+
+/**
+ * checkUserSession(sid)
+ * @param {string} sid - PHPSESSID
+ * @returns {Promise<{success:boolean, user?:object, message?:string}>}
  */
 export async function checkUserSession(sid) {
-  if (!sid) return { success: false };
-
-  const url = `https://www.doca.at/php_logic/check_session.php?sid=${encodeURIComponent(
-    sid
-  )}`;
+  if (!sid) return { success: false, message: "no sid" };
 
   try {
-    const res = await fetch(url, { method: "GET" });
-    const json = await res.json();
+    const url = new URL(DOCA_SESSION_CHECK_URL);
+    url.searchParams.set("sid", sid);
 
-    if (json.success && json.user) {
-      return {
-        success: true,
-        user: {
-          id: json.user.id,
-          username: json.user.username || json.user.name || "Unbekannt",
-        },
-      };
+    const res = await fetch(url.toString(), { method: "GET", timeout: 5000 });
+    if (!res.ok) {
+      return { success: false, message: `http ${res.status}` };
     }
-    return { success: false };
+
+    const json = await res.json();
+    if (json && json.success) {
+      return { success: true, user: json.user };
+    } else {
+      return { success: false, message: json?.message || "invalid session" };
+    }
   } catch (err) {
-    console.error("❌ Fehler bei checkUserSession:", err);
-    return { success: false };
+    console.error("userManager.checkUserSession error:", err);
+    return { success: false, message: "error" };
   }
 }
