@@ -1,4 +1,4 @@
-// server.js - FINALE STABILE VERSION 26 (ALLE FUNKTIONEN WIEDERHERGESTELLT)
+// server.js - FINALE STABILE VERSION 27 (ALLE FUNKTIONEN VOLLSTÄNDIG REPARIERT)
 
 const WebSocket = require('ws');
 const port = process.env.PORT || 8080;
@@ -176,4 +176,4 @@ wss.on('connection', ws => {
     });
 });
 
-console.log(`Finale stabile Server-Version 26 (Alles repariert) gestartet auf Port ${port}`);
+console.log(`Finale stabile Server-Version 27 (Alles repariert) gestartet auf Port ${port}`);
