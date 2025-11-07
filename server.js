@@ -1,4 +1,4 @@
-// server.js - FINALE STABILE VERSION 24 (Scorer-Zähllogik repariert)
+// server.js - FINALE STABILE VERSION 25 (Alles repariert)
 
 const WebSocket = require('ws');
 const port = process.env.PORT || 8080;
@@ -33,8 +33,7 @@ function updateStats(player, score) {
     player.stats.matchAvg = ((player.stats.matchScore) / player.stats.matchDarts * 3).toFixed(2);
     
     if (player.legDarts < 9) {
-        const dartsInLeg = Math.min(3, 9 - player.legDarts);
-        player.stats.first9Darts += dartsInLeg;
+        player.stats.first9Darts += 3;
         player.stats.first9Score += score;
         if(player.stats.first9Darts > 0) player.stats.first9Avg = ((player.stats.first9Score) / player.stats.first9Darts * 3).toFixed(2);
     }
@@ -51,14 +50,12 @@ function processScore(gameState, score) {
     const player = gameState[playerKey];
     const newScore = player.score - score;
 
-    // KORREKTUR: Die Bust-Logik berücksichtigt jetzt den eingestellten Checkout-Modus
     let isBust = false;
     if (newScore < 0) {
-        isBust = true; // Überworfen ist immer Bust
+        isBust = true;
     } else if (newScore === 1 && gameState.settings.checkout === 'Double Out') {
-        isBust = true; // 1 Rest ist bei Double Out Bust
+        isBust = true;
     }
-    // Bei Master Out und Single Out ist 1 Rest kein Bust. Ein Finish auf 0 wird als gültig angenommen.
 
     updateStats(player, isBust ? 0 : score);
     player.legDarts += 3;
@@ -179,4 +176,4 @@ wss.on('connection', ws => {
     });
 });
 
-console.log(`Finale stabile Server-Version 24 (Scorer-Logik repariert) gestartet auf Port ${port}`);
+console.log(`Finale stabile Server-Version 25 (Alles repariert) gestartet auf Port ${port}`);
