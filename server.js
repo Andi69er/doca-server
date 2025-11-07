@@ -1,4 +1,4 @@
-// server.js - FINALE STABILE VERSION (Undo & Abort repariert)
+// server.js - FINALE STABILE VERSION 24 (Scorer-Zähllogik repariert)
 
 const WebSocket = require('ws');
 const port = process.env.PORT || 8080;
@@ -50,16 +50,28 @@ function processScore(gameState, score) {
     const playerKey = gameState.currentPlayer;
     const player = gameState[playerKey];
     const newScore = player.score - score;
-    const isBust = newScore < 0 || (newScore === 1 && gameState.settings.checkout.startsWith("Double"));
+
+    // KORREKTUR: Die Bust-Logik berücksichtigt jetzt den eingestellten Checkout-Modus
+    let isBust = false;
+    if (newScore < 0) {
+        isBust = true; // Überworfen ist immer Bust
+    } else if (newScore === 1 && gameState.settings.checkout === 'Double Out') {
+        isBust = true; // 1 Rest ist bei Double Out Bust
+    }
+    // Bei Master Out und Single Out ist 1 Rest kein Bust. Ein Finish auf 0 wird als gültig angenommen.
 
     updateStats(player, isBust ? 0 : score);
     player.legDarts += 3;
     gameState.legJustFinished = false;
 
-    if (isBust) { player.lastThrow = `BUST (${score})`; } 
-    else { player.score = newScore; player.lastThrow = score; }
+    if (isBust) {
+        player.lastThrow = `BUST (${score})`;
+    } else {
+        player.score = newScore;
+        player.lastThrow = score;
+    }
 
-    if (newScore === 0) {
+    if (newScore === 0 && !isBust) {
         player.legsWon++;
         gameState.legJustFinished = true;
         if (score > player.highestFinish) { player.highestFinish = score; }
@@ -119,7 +131,6 @@ wss.on('connection', ws => {
         const sourcePlayerKey = `p${playerIndex + 1}`;
         if (['offer', 'answer', 'candidate'].includes(data.type)) { gameRoom.players.find(p => p.ws !== ws)?.ws.send(JSON.stringify(data)); return; }
 
-        // Aktionen, die nur Spieler 1 (der Host) ausführen kann
         if (playerIndex === 0) {
             if (data.type === 'settings_update') { gameRoom.gameSettings = data.settings; broadcast(data); }
             if (data.type === 'start_game' && data.settings) {
@@ -133,9 +144,8 @@ wss.on('connection', ws => {
                 }
             }
         }
-
-        // Aktionen, die beide Spieler ausführen können
-        if (data.type === 'new_game') { // FIX: Aus dem "playerIndex === 0"-Block verschoben
+        
+        if (data.type === 'new_game') {
             gameRoom.gameState = null; gameRoom.gameSettings = null; gameRoom.lastState = null; gameRoom.bullOffState = null;
             broadcast({ type: 'new_game' });
         }
@@ -153,9 +163,9 @@ wss.on('connection', ws => {
             broadcast({ type: 'game_update', gameState: gameRoom.gameState });
         }
         
-        if (data.type === 'undo_throw' && gameRoom.lastState) { // FIX: Fehlerhafte Bedingung entfernt
+        if (data.type === 'undo_throw' && gameRoom.lastState) {
             gameRoom.gameState = gameRoom.lastState;
-            gameRoom.lastState = null; // Wichtig: Zurücksetzen, um doppeltes Undo zu verhindern
+            gameRoom.lastState = null;
             broadcast({ type: 'game_update', gameState: gameRoom.gameState });
         }
     });
@@ -169,4 +179,4 @@ wss.on('connection', ws => {
     });
 });
 
-console.log(`Finale stabile Server-Version 22 (Undo & Abort repariert) gestartet auf Port ${port}`);
+console.log(`Finale stabile Server-Version 24 (Scorer-Logik repariert) gestartet auf Port ${port}`);
