@@ -1,4 +1,4 @@
-// server.js - FINALE STABILE VERSION (mit Statistik, Webcam & Spielstart repariert)
+// server.js - FINALE STABILE VERSION (Undo & Abort repariert)
 
 const WebSocket = require('ws');
 const port = process.env.PORT || 8080;
@@ -119,6 +119,7 @@ wss.on('connection', ws => {
         const sourcePlayerKey = `p${playerIndex + 1}`;
         if (['offer', 'answer', 'candidate'].includes(data.type)) { gameRoom.players.find(p => p.ws !== ws)?.ws.send(JSON.stringify(data)); return; }
 
+        // Aktionen, die nur Spieler 1 (der Host) ausführen kann
         if (playerIndex === 0) {
             if (data.type === 'settings_update') { gameRoom.gameSettings = data.settings; broadcast(data); }
             if (data.type === 'start_game' && data.settings) {
@@ -131,7 +132,12 @@ wss.on('connection', ws => {
                     broadcast({ type: 'start_game', gameState: gameRoom.gameState });
                 }
             }
-            if (data.type === 'new_game') { gameRoom.gameState = null; gameRoom.gameSettings = null; gameRoom.lastState = null; gameRoom.bullOffState = null; broadcast({ type: 'new_game' }); }
+        }
+
+        // Aktionen, die beide Spieler ausführen können
+        if (data.type === 'new_game') { // FIX: Aus dem "playerIndex === 0"-Block verschoben
+            gameRoom.gameState = null; gameRoom.gameSettings = null; gameRoom.lastState = null; gameRoom.bullOffState = null;
+            broadcast({ type: 'new_game' });
         }
 
         if (data.type === 'submit_bull_throw' && gameRoom.bullOffState) {
@@ -141,8 +147,17 @@ wss.on('connection', ws => {
             determineBullOffWinner();
         }
 
-        if (data.type === 'submit_score' && gameRoom.gameState?.currentPlayer === sourcePlayerKey) { gameRoom.lastState = JSON.parse(JSON.stringify(gameRoom.gameState)); gameRoom.gameState = processScore(gameRoom.gameState, data.score); broadcast({ type: 'game_update', gameState: gameRoom.gameState }); }
-        if (data.type === 'undo_throw' && gameRoom.lastState && gameRoom.gameState?.currentPlayer !== sourcePlayerKey) { gameRoom.gameState = gameRoom.lastState; gameRoom.lastState = null; broadcast({ type: 'game_update', gameState: gameRoom.gameState }); }
+        if (data.type === 'submit_score' && gameRoom.gameState?.currentPlayer === sourcePlayerKey) {
+            gameRoom.lastState = JSON.parse(JSON.stringify(gameRoom.gameState));
+            gameRoom.gameState = processScore(gameRoom.gameState, data.score);
+            broadcast({ type: 'game_update', gameState: gameRoom.gameState });
+        }
+        
+        if (data.type === 'undo_throw' && gameRoom.lastState) { // FIX: Fehlerhafte Bedingung entfernt
+            gameRoom.gameState = gameRoom.lastState;
+            gameRoom.lastState = null; // Wichtig: Zurücksetzen, um doppeltes Undo zu verhindern
+            broadcast({ type: 'game_update', gameState: gameRoom.gameState });
+        }
     });
 
     ws.on('close', () => {
@@ -154,4 +169,4 @@ wss.on('connection', ws => {
     });
 });
 
-console.log(`Finale stabile Server-Version 21 (mit Statistik) gestartet auf Port ${port}`);
+console.log(`Finale stabile Server-Version 22 (Undo & Abort repariert) gestartet auf Port ${port}`);
