@@ -1,27 +1,38 @@
 // roomManager.js
 // ===========================================
-// Handles rooms, clients and high-level messages.
+// Handles rooms, clients, and high-level messages
 // ===========================================
 
 import { GameLogic } from "./gameLogic.js";
 
 export const roomManager = (function () {
-  // clients: Map(ws => meta)
-  const clients = new Map();
-  // rooms: Map(roomId => { id, name, players: [ws,...], game: GameLogic|null })
-  const rooms = new Map();
+  const clients = new Map(); // key: ws, value: meta
+  const rooms = new Map(); // key: roomId, value: { id, name, players, game }
 
-  // helper send
+  const DEFAULT_ROOM_ID = "default-room";
+
+  if (!rooms.has(DEFAULT_ROOM_ID)) {
+    rooms.set(DEFAULT_ROOM_ID, {
+      id: DEFAULT_ROOM_ID,
+      name: "Default-Raum",
+      players: [],
+      game: null,
+    });
+  }
+
+  // ------------------------------
+  // Hilfsfunktionen
+  // ------------------------------
   function send(ws, obj) {
     try {
       if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
     } catch (e) {
-      console.error("Send error", e);
+      console.error("Send error:", e);
     }
   }
 
   function broadcast(obj, exclude = null) {
-    for (const [ws] of clients) {
+    for (const [ws] of clients.entries()) {
       if (ws.readyState === ws.OPEN && ws !== exclude) send(ws, obj);
     }
   }
@@ -34,18 +45,33 @@ export const roomManager = (function () {
     }
   }
 
-  // Create default room on startup
-  const DEFAULT_ROOM_ID = "default-room";
-  if (!rooms.has(DEFAULT_ROOM_ID)) {
-    rooms.set(DEFAULT_ROOM_ID, {
-      id: DEFAULT_ROOM_ID,
-      name: "Default-Raum",
-      players: [],
-      game: null,
-    });
+  function serializeRoom(room) {
+    return {
+      id: room.id,
+      name: room.name,
+      players: room.players.map((ws) => {
+        const m = clients.get(ws);
+        return { id: m?.id ?? null, name: m?.username ?? "Gast" };
+      }),
+      gameActive: !!room.game,
+    };
   }
 
-  // add client meta
+  function getAllRooms() {
+    return Array.from(rooms.values()).map((r) => serializeRoom(r));
+  }
+
+  function getOnlineList() {
+    const list = [];
+    for (const [ws, m] of clients.entries()) {
+      list.push({ id: m.id || null, name: m.username || "Gast", room: m.currentRoom || null });
+    }
+    return list;
+  }
+
+  // ------------------------------
+  // Clientverwaltung
+  // ------------------------------
   function registerClient(ws) {
     const meta = {
       id: null,
@@ -62,12 +88,10 @@ export const roomManager = (function () {
   function unregisterClient(ws) {
     const meta = clients.get(ws);
     if (!meta) return;
-    // remove from room
     if (meta.currentRoom) {
       const room = rooms.get(meta.currentRoom);
       if (room) {
         room.players = room.players.filter((s) => s !== ws);
-        // if game exists, notify
         if (room.game) {
           room.game.removePlayer(ws);
           sendToRoom(room.id, { type: "room_update", room: serializeRoom(room) });
@@ -77,40 +101,24 @@ export const roomManager = (function () {
     clients.delete(ws);
   }
 
-  function serializeRoom(room) {
-    return {
-      id: room.id,
-      name: room.name,
-      players: room.players.map((ws) => {
-        const m = clients.get(ws);
-        return {
-          id: m?.id ?? null,
-          name: m?.username ?? "Gast",
-        };
-      }),
-      gameActive: !!room.game,
-    };
-  }
-
-  // handle incoming messages
+  // ------------------------------
+  // Nachrichtenbehandlung
+  // ------------------------------
   function handleMessage(ws, data) {
     const meta = clients.get(ws);
     if (!meta) return;
 
     switch (data.type) {
       case "auth":
-        // expected { type: "auth", sid: "...", user: "Name", id: 123 }
         meta.sid = data.sid || null;
         meta.username = data.user || meta.username;
         meta.id = data.id || meta.id || Math.floor(Math.random() * 90000) + 1000;
         meta.isAuthenticated = true;
         send(ws, { type: "auth_ok", user: { id: meta.id, name: meta.username } });
-        // broadcast online list
         broadcast({ type: "online_list", online: getOnlineList() });
         break;
 
       case "login":
-        // lightweight login (test clients)
         meta.username = data.user || meta.username;
         meta.id = data.id || meta.id || Math.floor(Math.random() * 90000) + 1000;
         meta.isAuthenticated = true;
@@ -118,21 +126,23 @@ export const roomManager = (function () {
         broadcast({ type: "online_list", online: getOnlineList() }, ws);
         break;
 
+      case "list_rooms":
+        send(ws, { type: "room_list", rooms: getAllRooms() });
+        break;
+
       case "join_room":
         {
           const roomId = data.roomId || DEFAULT_ROOM_ID;
-          const room = rooms.get(roomId);
-          if (!room) {
-            // create new room
-            const newRoom = {
+          if (!rooms.has(roomId)) {
+            rooms.set(roomId, {
               id: roomId,
               name: data.roomName || `Raum ${roomId}`,
               players: [],
               game: null,
-            };
-            rooms.set(roomId, newRoom);
+            });
           }
-          // remove from old room if any
+          const room = rooms.get(roomId);
+
           if (meta.currentRoom && meta.currentRoom !== roomId) {
             const old = rooms.get(meta.currentRoom);
             if (old) {
@@ -140,21 +150,20 @@ export const roomManager = (function () {
               sendToRoom(old.id, { type: "room_update", room: serializeRoom(old) });
             }
           }
-          const target = rooms.get(roomId);
-          if (!target.players.includes(ws)) target.players.push(ws);
+
+          if (!room.players.includes(ws)) room.players.push(ws);
           meta.currentRoom = roomId;
 
-          send(ws, { type: "joined_room", room: serializeRoom(target) });
-          sendToRoom(roomId, { type: "room_update", room: serializeRoom(target) });
-          // if there's no game, optionally create one lazily
-          if (!target.game) {
-            // do not auto start — create engine container
-            target.game = new GameLogic(target.id, sendToRoom.bind(null, target.id));
+          send(ws, { type: "joined_room", room: serializeRoom(room) });
+          sendToRoom(roomId, { type: "room_update", room: serializeRoom(room) });
+
+          if (!room.game) {
+            room.game = new GameLogic(room.id, sendToRoom.bind(null, room.id));
           }
-          // add player to game engine
-          target.game.addPlayer(ws, meta);
-          send(ws, { type: "info", message: `Beigetreten zu ${target.name}` });
-          sendToRoom(roomId, { type: "info", message: `${meta.username} ist dem Raum beigetreten.` }, ws);
+          room.game.addPlayer(ws, meta);
+
+          send(ws, { type: "info", message: `Beigetreten zu ${room.name}` });
+          sendToRoom(roomId, { type: "info", message: `${meta.username} ist beigetreten.` }, ws);
         }
         break;
 
@@ -169,30 +178,32 @@ export const roomManager = (function () {
           if (!room.game) room.game = new GameLogic(roomId, sendToRoom.bind(null, roomId));
           const started = room.game.start();
           if (started) {
-            sendToRoom(roomId, { type: "start_game", message: "Spiel startet", players: room.game.getPlayersInfo() });
+            sendToRoom(roomId, {
+              type: "start_game",
+              message: "Spiel startet",
+              players: room.game.getPlayersInfo(),
+            });
             sendToRoom(roomId, { type: "room_update", room: serializeRoom(room) });
           } else {
-            send(ws, { type: "error", message: "Spiel konnte nicht gestartet werden (zu wenig Spieler?)." });
+            send(ws, { type: "error", message: "Zu wenig Spieler zum Starten." });
           }
         }
         break;
 
       case "throw":
         {
-          // pass throw to room.game
           const roomId = meta.currentRoom || DEFAULT_ROOM_ID;
           const room = rooms.get(roomId);
           if (!room || !room.game) {
-            send(ws, { type: "error", message: "Kein Spiel aktiv." });
+            send(ws, { type: "error", message: "Kein aktives Spiel." });
             break;
           }
-          // data.payload expected: { darts: [n,n,n] } or { value: 20, multiplier: 3 } etc.
           room.game.handleThrow(ws, data.payload || {});
         }
         break;
 
       case "ping":
-        send(ws, { type: "pong", message: "Hallo zurück vom Server 👋" });
+        send(ws, { type: "pong", message: "🏓 Pong vom Server" });
         break;
 
       default:
@@ -201,26 +212,15 @@ export const roomManager = (function () {
     }
   }
 
-  function getOnlineList() {
-    const list = [];
-    for (const [ws, m] of clients.entries()) {
-      list.push({ id: m.id || null, name: m.username || "Gast", room: m.currentRoom || null });
-    }
-    return list;
-  }
-
-  // handle new connection
   function handleConnection(ws, req) {
-    const meta = registerClient(ws);
-
+    registerClient(ws);
     send(ws, { type: "info", message: "Verbunden mit DOCA WebDarts Server" });
 
     ws.on("message", (msg) => {
       let data;
       try {
         data = JSON.parse(msg.toString());
-      } catch (e) {
-        console.error("Invalid JSON", e);
+      } catch {
         send(ws, { type: "error", message: "Ungültiges JSON" });
         return;
       }
@@ -228,22 +228,12 @@ export const roomManager = (function () {
     });
 
     ws.on("close", () => {
-      // remove from any room and game
       unregisterClient(ws);
       broadcast({ type: "online_list", online: getOnlineList() });
     });
 
-    ws.on("error", (err) => {
-      console.error("WS error:", err);
-    });
+    ws.on("error", (err) => console.error("WS-Fehler:", err));
   }
 
-  // expose functions
-  return {
-    handleConnection,
-    handleMessage, // optionally usable externally
-    clients,
-    rooms,
-    serializeRoom,
-  };
+  return { handleConnection, handleMessage, clients, rooms };
 })();
