@@ -184,4 +184,103 @@ class RoomManager {
           // client can set their display name
           if (data.name && typeof data.name === "string") {
             client.name = data.name.substring(0, 32);
-            this.send(ws, { type: "server_log", messa_
+            this.send(ws, { type: "server_log", message: `Name gesetzt: ${client.name}` });
+            this.broadcastOnlineList();
+            this.broadcastRoomUpdate();
+          }
+          break;
+
+        case "chat_message":
+          {
+            const text = data.message ? String(data.message).slice(0, 1000) : "";
+            // broadcast to players in same room if client is in a room, otherwise broadcast globally
+            if (client.roomId) {
+              const room = this.rooms.get(client.roomId);
+              if (room) {
+                // send to each player in room
+                room.players.forEach((pid) => {
+                  const p = this.clients.get(pid);
+                  if (p && p.ws && p.ws.readyState === p.ws.OPEN) {
+                    this.send(p.ws, { type: "chat_message", from: client.name, message: text });
+                  }
+                });
+              }
+            } else {
+              // global chat broadcast
+              this.broadcast({ type: "chat_message", from: client.name, message: text });
+            }
+          }
+          break;
+
+        case "list_rooms":
+          {
+            const rooms = Array.from(this.rooms.values()).map((r) => ({
+              id: r.id,
+              name: r.name,
+              players: r.players.map((id) => this.clients.get(id)?.name || "unknown"),
+              maxPlayers: r.maxPlayers,
+            }));
+            this.send(ws, { type: "room_update", rooms });
+          }
+          break;
+
+        case "create_room":
+          {
+            const name = data.name ? String(data.name).slice(0, 64) : "Neuer Raum";
+            const maxPlayers = Number(data.maxPlayers) || 2;
+            const room = this.createRoom(name, maxPlayers);
+            // auto-join creator
+            this.addClientToRoom(clientId, room.id);
+            // inform creator
+            this.send(ws, { type: "server_log", message: `Raum erstellt und beigetreten: ${room.name}` });
+            this.send(ws, { type: "joined_room", roomId: room.id });
+          }
+          break;
+
+        case "join_room":
+          {
+            const roomId = data.roomId;
+            if (!roomId || !this.rooms.has(roomId)) {
+              this.send(ws, { type: "server_log", message: "Raum nicht gefunden" });
+              break;
+            }
+            const res = this.addClientToRoom(clientId, roomId);
+            if (res.ok) {
+              this.send(ws, { type: "joined_room", roomId });
+            } else {
+              this.send(ws, { type: "server_log", message: `Beitritt fehlgeschlagen: ${res.reason}` });
+            }
+          }
+          break;
+
+        case "leave_room":
+          {
+            const roomId = data.roomId || client.roomId;
+            if (roomId && this.rooms.has(roomId)) {
+              this.removeClientFromRoom(clientId, roomId);
+              this.send(ws, { type: "left_room", roomId });
+            } else {
+              this.send(ws, { type: "server_log", message: "Kein Raum zu verlassen" });
+            }
+          }
+          break;
+
+        default:
+          this.send(ws, { type: "server_log", message: `Unbekannter Nachrichtentyp: ${t}` });
+          break;
+      }
+    });
+
+    ws.on("close", () => {
+      this.log(`Verbindung getrennt: ${client.name} (${clientId})`);
+      this.removeClient(clientId);
+    });
+
+    ws.on("error", (err) => {
+      console.error("WebSocket-Fehler clientId=", clientId, err);
+      this.removeClient(clientId);
+    });
+  }
+}
+
+export const roomManager = new RoomManager();
