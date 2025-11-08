@@ -1,5 +1,5 @@
 // roomManager.js
-// Raum-Manager + Game-Integration (nutzt Game mit 3-Dart-Runden)
+// Room manager that integrates the enhanced Game implementation (gameLogic.js)
 
 import { Game } from "./gameLogic.js";
 
@@ -9,12 +9,12 @@ function makeId(prefix = "room") {
 
 class RoomManager {
   constructor() {
-    this.clients = new Map();
-    this.rooms = new Map();
+    this.clients = new Map(); // clientId -> { ws, id, name, roomId }
+    this.rooms = new Map();   // roomId -> { id, name, maxPlayers, players:[], game:Game|null }
   }
 
   send(ws, obj) {
-    try { ws.send(JSON.stringify(obj)); } catch (e) { console.error(e); }
+    try { ws.send(JSON.stringify(obj)); } catch (err) { /* ignore */ }
   }
 
   broadcast(obj) {
@@ -85,7 +85,7 @@ class RoomManager {
     const room = this.rooms.get(roomId);
     if (!client || !room) return;
     const idx = room.players.indexOf(clientId);
-    if (idx !== -1) room.players.splice(idx,1);
+    if (idx !== -1) room.players.splice(idx, 1);
     if (client.roomId === roomId) client.roomId = null;
 
     if (room.game) {
@@ -113,27 +113,27 @@ class RoomManager {
     this.broadcast({ type: "server_log", message: msg });
   }
 
-  startGameInRoom(roomId, options = {}) {
+  startGameInRoom(roomId, options = {}, callerId = null) {
     const room = this.rooms.get(roomId);
-    if (!room) return { ok:false, message: "Raum nicht gefunden" };
+    if (!room) return { ok:false, message:"Raum nicht gefunden" };
     if (room.game && room.game.started) return { ok:false, message:"Spiel läuft bereits" };
+
     const players = Array.from(room.players);
-    const startingScore = Number(options.startingScore) || 501;
-    const game = new Game(roomId, players, startingScore);
-    const state = game.start();
+    const game = new Game(roomId, players, options);
+    const state = game.start(callerId);
     room.game = game;
-    this.log(`Spiel gestartet in Raum ${room.name} (${room.id}) mit ${players.length} Spielern`);
+    this.log(`Spiel gestartet in Raum ${room.name} (${room.id}) - variant=${options.variant || 'standard'} startScore=${options.startingScore} finish=${options.finishType} DI=${options.doubleIn} startChoice=${options.startChoice}`);
     this.broadcastToClientIds(room.players, state);
     return { ok:true, state };
   }
 
-  handlePlayerThrow(clientId, roomId, value) {
+  handlePlayerThrow(clientId, roomId, value, mult = 1) {
     const room = this.rooms.get(roomId);
     if (!room || !room.game) return { ok:false, message: "Kein Spiel aktiv" };
-    const res = room.game.playerThrow(clientId, value);
-    // broadcast updated state to room
+    const res = room.game.playerThrow(clientId, value, mult);
+    // broadcast updated state to room players
     this.broadcastToClientIds(room.players, room.game.getState());
-    if (res.message) this.log(`Throw result: ${res.message} (player ${clientId}, value ${value})`);
+    if (res && res.message) this.log(`Throw result: ${res.message} (player ${clientId}, value ${value}, mult ${mult})`);
     return res;
   }
 
@@ -143,7 +143,7 @@ class RoomManager {
     try {
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
       if (url.searchParams.get("name")) name = url.searchParams.get("name");
-    } catch(e) {}
+    } catch (e) {}
 
     const client = { ws, id: clientId, name, roomId: null };
     this.clients.set(clientId, client);
@@ -166,7 +166,7 @@ class RoomManager {
 
         case "set_name":
           if (data.name && typeof data.name === "string") {
-            client.name = data.name.substring(0,32);
+            client.name = data.name.substring(0, 32);
             this.send(ws, { type:"server_log", message: `Name gesetzt: ${client.name}` });
             this.broadcastOnlineList();
             this.broadcastRoomUpdate();
@@ -174,7 +174,7 @@ class RoomManager {
           break;
 
         case "chat_message": {
-          const text = data.message ? String(data.message).slice(0,1000) : "";
+          const text = data.message ? String(data.message).slice(0, 1000) : "";
           if (client.roomId) {
             const room = this.rooms.get(client.roomId);
             if (room) this.broadcastToClientIds(room.players, { type:"chat_message", from: client.name, message: text });
@@ -185,10 +185,10 @@ class RoomManager {
         }
 
         case "list_rooms": {
-          const rooms = Array.from(this.rooms.values()).map((r) => ({
+          const rooms = Array.from(this.rooms.values()).map(r => ({
             id: r.id,
             name: r.name,
-            players: r.players.map((id) => this.clients.get(id)?.name || "unknown"),
+            players: r.players.map(id => this.clients.get(id)?.name || "unknown"),
             maxPlayers: r.maxPlayers,
             hasGame: !!r.game
           }));
@@ -208,7 +208,7 @@ class RoomManager {
 
         case "join_room": {
           const roomId = data.roomId;
-          if (!roomId || !this.rooms.has(roomId)) { this.send(ws, { type:"server_log", message:"Raum nicht gefunden"}); break; }
+          if (!roomId || !this.rooms.has(roomId)) { this.send(ws, { type:"server_log", message:"Raum nicht gefunden" }); break; }
           const res = this.addClientToRoom(clientId, roomId);
           if (res.ok) this.send(ws, { type:"joined_room", roomId });
           else this.send(ws, { type:"server_log", message:`Beitritt fehlgeschlagen: ${res.reason}` });
@@ -229,8 +229,15 @@ class RoomManager {
         case "start_game": {
           const roomId = data.roomId || client.roomId;
           if (!roomId) { this.send(ws, { type:"server_log", message:"Du bist in keinem Raum" }); break; }
-          const opts = { startingScore: Number(data.startingScore) || 501 };
-          const res = this.startGameInRoom(roomId, opts);
+          // Accept options: startingScore, variant, finishType, doubleIn, startChoice
+          const options = {
+            startingScore: Number(data.startingScore) || 501,
+            variant: data.variant || "standard",
+            finishType: data.finishType || "single_out",
+            doubleIn: !!data.doubleIn,
+            startChoice: data.startChoice || "first"
+          };
+          const res = this.startGameInRoom(roomId, options, clientId);
           if (!res.ok) this.send(ws, { type:"server_log", message:`Spielstart fehlgeschlagen: ${res.message}` });
           break;
         }
@@ -238,14 +245,15 @@ class RoomManager {
         case "throw_dart": {
           const roomId = data.roomId || client.roomId;
           const value = Number(data.value) || 0;
+          const mult = Number(data.mult) || 1;
           if (!roomId) { this.send(ws, { type:"server_log", message:"Du bist in keinem Raum" }); break; }
-          const res = this.handlePlayerThrow(clientId, roomId, value);
+          const res = this.handlePlayerThrow(clientId, roomId, value, mult);
           if (!res.ok) this.send(ws, { type:"server_log", message:`Wurf fehlgeschlagen: ${res.message}` });
           break;
         }
 
         default:
-          this.send(ws, { type:"server_log", message:`Unbekannter Nachrichtentyp: ${t}` });
+          this.send(ws, { type:"server_log", message: `Unbekannter Nachrichtentyp: ${t}` });
           break;
       }
     });
