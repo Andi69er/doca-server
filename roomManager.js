@@ -1,126 +1,261 @@
-// roomManager.js (Endgültige Version)
-import { handleThrow, startGame, handleBull, handleUndo } from "./gameLogic.js";
+// ============================================================
+// DOCA WebDarts PRO – Raum-, Spiel- und Signalling-Manager
+// ============================================================
 
-export class RoomManager {
-  constructor() {
-    this.rooms = new Map();
-  }
+import { Game } from "./gameLogic.js";
 
-  createRoom(name, ownerId) {
-    const id = "room-" + Math.random().toString(36).substring(2, 8);
-    this.rooms.set(id, {
-      id,
-      name,
-      ownerId,
-      players: [ownerId],
-      started: false,
-      state: null,
-    });
-    return this.rooms.get(id);
-  }
+// Maps
+const rooms = new Map();     // roomId -> { id, name, players, game }
+const clients = new Map();   // ws -> { id, name, roomId }
 
-  joinRoom(roomId, playerId) {
-    const room = this.rooms.get(roomId);
-    if (!room) return null;
-    if (!room.players.includes(playerId)) room.players.push(playerId);
-    return room;
-  }
+// Utility
+function genId(prefix = "r") {
+  return prefix + Math.random().toString(36).substring(2, 8);
+}
 
-  leaveRoom(roomId, playerId) {
-    const room = this.rooms.get(roomId);
-    if (!room) return;
-    room.players = room.players.filter((id) => id !== playerId);
-  }
-
-  handleMessage(ws, clientId, msg, sendToClient, broadcast) {
-    const { type } = msg;
-
-    switch (type) {
-      case "create_room": {
-        const room = this.createRoom(msg.name, clientId);
-        sendToClient(ws, { type: "joined_room", roomId: room.id });
-        this.broadcastRooms(broadcast);
-        break;
-      }
-
-      case "join_room": {
-        const room = this.joinRoom(msg.roomId, clientId);
-        if (room) {
-          sendToClient(ws, { type: "joined_room", roomId: room.id });
-          this.broadcastRooms(broadcast);
-        }
-        break;
-      }
-
-      case "leave_room": {
-        this.leaveRoom(msg.roomId, clientId);
-        this.broadcastRooms(broadcast);
-        break;
-      }
-
-      case "start_game": {
-        const room = [...this.rooms.values()].find((r) =>
-          r.players.includes(clientId)
-        );
-        if (room) {
-          room.state = startGame(room.players, msg);
-          room.started = true;
-          this.updateGame(room, broadcast);
-        }
-        break;
-      }
-
-      case "throw_dart": {
-        const room = [...this.rooms.values()].find((r) =>
-          r.players.includes(clientId)
-        );
-        if (!room || !room.state) return;
-        room.state = handleThrow(room.state, clientId, msg.value, msg.mult);
-        this.updateGame(room, broadcast);
-        break;
-      }
-
-      case "bull_shot": {
-        const room = [...this.rooms.values()].find((r) =>
-          r.players.includes(clientId)
-        );
-        if (!room || !room.state) return;
-        room.state = handleBull(room.state, clientId, msg.mult);
-        this.updateGame(room, broadcast);
-        break;
-      }
-
-      case "undo_throw": {
-        const room = [...this.rooms.values()].find((r) =>
-          r.players.includes(clientId)
-        );
-        if (!room || !room.state) return;
-        room.state = handleUndo(room.state, clientId);
-        this.updateGame(room, broadcast);
-        break;
-      }
-
-      default:
-        break;
-    }
-  }
-
-  broadcastRooms(broadcast) {
-    const list = [...this.rooms.values()].map((r) => ({
-      id: r.id,
-      name: r.name,
-      players: r.players,
-      maxPlayers: 2,
-    }));
-    broadcast({ type: "room_update", rooms: list });
-  }
-
-  updateGame(room, broadcast) {
-    broadcast({
-      type: "game_state",
-      ...room.state,
-    });
+function send(ws, data) {
+  try {
+    ws.send(JSON.stringify(data));
+  } catch (err) {
+    console.error("Send error:", err);
   }
 }
 
-export const roomManager = new RoomManager();
+function broadcast(roomId, data) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  for (const pid of room.players) {
+    for (const [sock, info] of clients.entries()) {
+      if (info.id === pid) send(sock, data);
+    }
+  }
+}
+
+function broadcastAll(data) {
+  for (const [ws] of clients) send(ws, data);
+}
+
+function updateOnlineList() {
+  const users = [...clients.values()].map(c => c.name);
+  broadcastAll({ type: "online_list", users });
+}
+
+function updateRooms() {
+  const list = [...rooms.values()].map(r => ({
+    id: r.id,
+    name: r.name,
+    players: r.players,
+    maxPlayers: 2,
+  }));
+  broadcastAll({ type: "room_update", rooms: list });
+}
+
+// ============================================================
+// Hauptverbindung
+// ============================================================
+
+function handleConnection(ws) {
+  const clientId = genId("p");
+  const name = `Gast-${clientId.slice(-3)}`;
+  clients.set(ws, { id: clientId, name, roomId: null });
+
+  send(ws, { type: "connected", clientId, name });
+  send(ws, { type: "server_log", message: `Willkommen ${name}` });
+  updateOnlineList();
+  updateRooms();
+
+  ws.on("message", msg => {
+    try {
+      const data = JSON.parse(msg);
+      handleMessage(ws, data);
+    } catch (e) {
+      console.error("Bad message:", msg);
+    }
+  });
+
+  ws.on("close", () => handleDisconnect(ws));
+}
+
+// ============================================================
+// Disconnect
+// ============================================================
+
+function handleDisconnect(ws) {
+  const c = clients.get(ws);
+  if (!c) return;
+  if (c.roomId) {
+    const room = rooms.get(c.roomId);
+    if (room) {
+      room.players = room.players.filter(p => p !== c.id);
+      if (room.game) room.game.removePlayer(c.id);
+      broadcast(room.id, { type: "server_log", message: `${c.name} hat den Raum verlassen.` });
+      if (room.players.length === 0) rooms.delete(room.id);
+    }
+  }
+  clients.delete(ws);
+  updateOnlineList();
+  updateRooms();
+}
+
+// ============================================================
+// Nachrichtenhandler
+// ============================================================
+
+function handleMessage(ws, data) {
+  const c = clients.get(ws);
+  if (!c) return;
+
+  // -------- Signalling (WebRTC) ------------
+  if (data.type === "signal") {
+    const targetId = data.to;
+    for (const [sock, info] of clients.entries()) {
+      if (info.id === targetId) {
+        const payload = {
+          type: "signal",
+          from: c.id,
+          signalType: data.signalType,
+          data: data.data,
+        };
+        send(sock, payload);
+        return;
+      }
+    }
+    return;
+  }
+
+  // -------- Ping/Pong ----------------------
+  if (data.type === "ping") {
+    send(ws, { type: "pong", message: data.message || "pong" });
+    return;
+  }
+
+  // -------- Chat ---------------------------
+  if (data.type === "chat_message") {
+    if (!c.roomId) return;
+    broadcast(c.roomId, { type: "chat_message", from: c.name, message: data.message });
+    return;
+  }
+
+  // -------- Raum erstellen -----------------
+  if (data.type === "create_room") {
+    const rid = genId("r");
+    const room = {
+      id: rid,
+      name: data.name || "Neuer Raum",
+      players: [c.id],
+      game: null,
+    };
+    rooms.set(rid, room);
+    c.roomId = rid;
+    room.game = new Game(rid, [c.id], { startingScore: data.startingScore || 501 });
+    send(ws, { type: "joined_room", roomId: rid });
+    broadcastAll({ type: "server_log", message: `${c.name} hat ${room.name} erstellt.` });
+    updateRooms();
+    return;
+  }
+
+  // -------- Raum beitreten -----------------
+  if (data.type === "join_room") {
+    const room = rooms.get(data.roomId);
+    if (!room) {
+      send(ws, { type: "server_log", message: "Raum nicht gefunden." });
+      return;
+    }
+    if (room.players.length >= 2) {
+      send(ws, { type: "server_log", message: "Raum ist voll." });
+      return;
+    }
+    room.players.push(c.id);
+    c.roomId = room.id;
+    if (room.game) room.game.addPlayer(c.id);
+    broadcast(room.id, { type: "joined_room", roomId: room.id });
+    broadcastAll({ type: "server_log", message: `${c.name} ist ${room.name} beigetreten.` });
+    updateRooms();
+    return;
+  }
+
+  // -------- Raum verlassen -----------------
+  if (data.type === "leave_room") {
+    const room = rooms.get(c.roomId);
+    if (room) {
+      room.players = room.players.filter(pid => pid !== c.id);
+      if (room.game) room.game.removePlayer(c.id);
+      broadcast(room.id, { type: "left_room", roomId: room.id });
+      if (room.players.length === 0) rooms.delete(room.id);
+    }
+    c.roomId = null;
+    updateRooms();
+    return;
+  }
+
+  // -------- Spiel starten ------------------
+  if (data.type === "start_game") {
+    const room = rooms.get(c.roomId);
+    if (!room || !room.game) return;
+    const opt = {
+      startingScore: data.startingScore || 501,
+      variant: data.variant || "standard",
+      finishType: data.finishType || "double_out",
+      doubleIn: !!data.doubleIn,
+      startChoice: data.startChoice || "first",
+    };
+    room.game = new Game(room.id, room.players, opt);
+    const state = room.game.start(c.id);
+    broadcast(room.id, state);
+    broadcast(room.id, { type: "server_log", message: "Spiel gestartet!" });
+    return;
+  }
+
+  // -------- Wurf ---------------------------
+  if (data.type === "throw_dart") {
+    const room = rooms.get(c.roomId);
+    if (!room || !room.game) return;
+    const res = room.game.playerThrow(c.id, data.value, data.mult);
+    broadcast(room.id, res.state || res);
+    return;
+  }
+
+  // -------- Undo ---------------------------
+  if (data.type === "undo_throw") {
+    const room = rooms.get(c.roomId);
+    if (!room || !room.game) return;
+    const res = room.game.undoLastThrow(c.id);
+    if (res.ok) broadcast(room.id, res.state);
+    send(ws, { type: "server_log", message: res.message });
+    return;
+  }
+
+  // -------- Bulling ------------------------
+  if (data.type === "bull_shot") {
+    const room = rooms.get(c.roomId);
+    if (!room || !room.game) return;
+    const res = room.game.handleBullShot(c.id, data.mult);
+    broadcast(room.id, res.state);
+    return;
+  }
+
+  // -------- Raumliste anfordern ------------
+  if (data.type === "request_room_members") {
+    const room = rooms.get(c.roomId);
+    if (!room) return;
+    const list = room.players.map(pid => ({
+      id: pid,
+      name: [...clients.values()].find(v => v.id === pid)?.name || pid,
+    }));
+    send(ws, { type: "room_members", roomId: room.id, members: list });
+    return;
+  }
+
+  // -------- Unbekannt ----------------------
+  send(ws, { type: "server_log", message: `Unbekannter Typ: ${data.type}` });
+}
+
+// ============================================================
+// Export
+// ============================================================
+
+export const roomManager = {
+  handleConnection,
+  broadcast,
+  send,
+};
