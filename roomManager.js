@@ -1,30 +1,9 @@
 // ===========================================
-// roomManager.js
-// Einfacher Raum- und Client-Manager für DOCA WebDarts
-// - Exportiert "roomManager" mit handleConnection(ws, req)
-// - Verwaltet: clients (Map), rooms (Map)
-// - Unterstützte Client-Nachrichten (JSON): ping, chat_message, list_rooms, create_room, join_room, leave_room
-// - Sendet an Clients ebenfalls JSON-Nachrichten mit "type" Feld
+// roomManager.js (komplette Datei)
+// Raum-Manager + Game-Integration für DOCA WebDarts
 // ===========================================
 
-/*
-  Nachrichtenschema (Beispiele):
-
-  Client -> Server:
-  { type: "ping", message: "Client verbunden", name: "Andi" }
-  { type: "chat_message", message: "Hallo Welt" }
-  { type: "list_rooms" }
-  { type: "create_room", name: "Raum 1", maxPlayers: 2 }
-  { type: "join_room", roomId: "room-123" }
-  { type: "leave_room", roomId: "room-123" }
-
-  Server -> Client:
-  { type: "pong", message: "Pong" }
-  { type: "server_log", message: "Text" }
-  { type: "online_list", users: ["A","B"] }
-  { type: "room_update", rooms: [{ id, name, players: [...], maxPlayers }] }
-  { type: "chat_message", from: "A", message: "Hi" }
-*/
+import { Game } from "./gameLogic.js";
 
 function makeId(prefix = "room") {
   return `${prefix}-${Math.random().toString(36).slice(2, 9)}`;
@@ -32,49 +11,55 @@ function makeId(prefix = "room") {
 
 class RoomManager {
   constructor() {
-    // clients: Map from clientId -> { ws, name, roomId (optional) }
+    // clients: Map clientId -> { ws, name, roomId }
     this.clients = new Map();
-    // rooms: Map from roomId -> { id, name, maxPlayers, players: [clientId,...] }
+    // rooms: Map roomId -> { id, name, maxPlayers, players: [clientId...], game: Game|null }
     this.rooms = new Map();
-
-    // optional default lobby
-    // this.createRoom("Lobby", 100);
   }
 
-  // Utility: send json safely
+  // send JSON safely
   send(ws, obj) {
     try {
       ws.send(JSON.stringify(obj));
     } catch (err) {
-      // swallow - ws may be closed
       console.error("Fehler beim Senden:", err);
     }
   }
 
-  // Broadcast to all connected clients
+  // broadcast to specific clients list
+  broadcastToClientIds(ids, obj) {
+    const s = JSON.stringify(obj);
+    ids.forEach((id) => {
+      const c = this.clients.get(id);
+      if (c && c.ws && c.ws.readyState === c.ws.OPEN) {
+        try {
+          c.ws.send(s);
+        } catch (e) {}
+      }
+    });
+  }
+
+  // broadcast to all
   broadcast(obj) {
-    const str = JSON.stringify(obj);
+    const s = JSON.stringify(obj);
     for (const { ws } of this.clients.values()) {
       try {
-        if (ws.readyState === ws.OPEN) ws.send(str);
-      } catch (err) {
-        // ignore per-client send errors
-      }
+        if (ws.readyState === ws.OPEN) ws.send(s);
+      } catch (err) {}
     }
   }
 
-  // Send update about rooms to everyone
   broadcastRoomUpdate() {
     const rooms = Array.from(this.rooms.values()).map((r) => ({
       id: r.id,
       name: r.name,
       players: r.players.map((id) => this.clients.get(id)?.name || "unknown"),
       maxPlayers: r.maxPlayers,
+      hasGame: !!r.game,
     }));
     this.broadcast({ type: "room_update", rooms });
   }
 
-  // Send online list to everyone
   broadcastOnlineList() {
     const users = Array.from(this.clients.values()).map((c) => c.name || "Gast");
     this.broadcast({ type: "online_list", users });
@@ -82,30 +67,34 @@ class RoomManager {
 
   createRoom(name = "Neuer Raum", maxPlayers = 2) {
     const id = makeId("room");
-    const room = { id, name, maxPlayers: Number(maxPlayers) || 2, players: [] };
+    const room = { id, name, maxPlayers: Number(maxPlayers) || 2, players: [], game: null };
     this.rooms.set(id, room);
     this.log(`Neuer Raum erstellt: ${name} (${id})`);
     this.broadcastRoomUpdate();
     return room;
   }
 
-  // internal helper to add client to a room
   addClientToRoom(clientId, roomId) {
     const client = this.clients.get(clientId);
     const room = this.rooms.get(roomId);
     if (!client || !room) return { ok: false, reason: "Client oder Raum nicht gefunden" };
-
     if (room.players.includes(clientId)) return { ok: false, reason: "Bereits im Raum" };
     if (room.players.length >= room.maxPlayers) return { ok: false, reason: "Raum voll" };
 
-    // remove from previous room if any
+    // leave previous room
     if (client.roomId) this.removeClientFromRoom(clientId, client.roomId);
 
     room.players.push(clientId);
     client.roomId = roomId;
 
+    // if a game exists in the room, add player to it
+    if (room.game) room.game.addPlayer(clientId);
+
     this.log(`Client ${client.name || clientId} ist Raum beigetreten: ${room.name} (${room.id})`);
     this.broadcastRoomUpdate();
+    this.broadcastOnlineList();
+    // notify players in room of updated game state (if any)
+    if (room.game) this.broadcastToClientIds(room.players, room.game.getState());
     return { ok: true };
   }
 
@@ -118,15 +107,22 @@ class RoomManager {
     if (idx !== -1) room.players.splice(idx, 1);
     if (client.roomId === roomId) client.roomId = null;
 
+    // if there is a game, remove player from it
+    if (room.game) {
+      room.game.removePlayer(clientId);
+      // if only 0 or 1 players left, stop game
+      if (room.game.players.length <= 1) {
+        // end game
+        room.game.started = false;
+      }
+    }
+
     this.log(`Client ${client.name || clientId} hat Raum verlassen: ${room.name} (${room.id})`);
-
-    // if room becomes empty, optional: delete it (here we keep rooms unless explicitly removed)
-    // if (room.players.length === 0) this.rooms.delete(roomId);
-
     this.broadcastRoomUpdate();
+    this.broadcastOnlineList();
+    if (room.game) this.broadcastToClientIds(room.players, room.game.getState());
   }
 
-  // Remove client entirely
   removeClient(clientId) {
     const client = this.clients.get(clientId);
     if (!client) return;
@@ -136,29 +132,51 @@ class RoomManager {
     this.broadcastOnlineList();
   }
 
-  // Logging helper (also broadcast to clients optionally)
   log(msg) {
     console.log(msg);
     this.broadcast({ type: "server_log", message: msg });
   }
 
-  // The main entry: handle a newly established ws connection
+  // Start a game in the given room (creator triggers)
+  startGameInRoom(roomId, options = {}) {
+    const room = this.rooms.get(roomId);
+    if (!room) return { ok: false, message: "Raum nicht gefunden" };
+    if (room.game && room.game.started) return { ok: false, message: "Spiel läuft bereits" };
+    // create Game instance with current players
+    const players = Array.from(room.players);
+    const startingScore = Number(options.startingScore) || 501;
+    const game = new Game(roomId, players, startingScore);
+    const state = game.start();
+    room.game = game;
+    this.log(`Spiel gestartet in Raum ${room.name} (${room.id}) mit ${players.length} Spielern`);
+    // notify all in room
+    this.broadcastToClientIds(room.players, state);
+    return { ok: true, state };
+  }
+
+  // Handle a dart throw from a client
+  handlePlayerThrow(clientId, roomId, value) {
+    const room = this.rooms.get(roomId);
+    if (!room || !room.game) return { ok: false, message: "Kein Spiel aktiv" };
+    const res = room.game.playerThrow(clientId, value);
+    // broadcast updated state to room
+    this.broadcastToClientIds(room.players, room.game.getState());
+    if (res.message) this.log(`Throw result: ${res.message} (player ${clientId}, value ${value})`);
+    return res;
+  }
+
+  // Main connection handler
   handleConnection(ws, req) {
-    // create a clientId
     const clientId = Math.random().toString(36).slice(2, 9);
-    // try to get name from query string if provided: ?name=Andi
     let name = "Gast";
     try {
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
       if (url.searchParams.get("name")) name = url.searchParams.get("name");
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) {}
 
     const client = { ws, id: clientId, name, roomId: null };
     this.clients.set(clientId, client);
 
-    // acknowledge to client with their id (so client can later refer)
     this.send(ws, { type: "connected", clientId, name });
     this.log(`🔌 Neue Verbindung hergestellt: ${name} (${clientId})`);
     this.broadcastOnlineList();
@@ -172,7 +190,6 @@ class RoomManager {
         return;
       }
 
-      // Normalize type
       const t = (data.type || "").toString();
 
       switch (t) {
@@ -181,7 +198,6 @@ class RoomManager {
           break;
 
         case "set_name":
-          // client can set their display name
           if (data.name && typeof data.name === "string") {
             client.name = data.name.substring(0, 32);
             this.send(ws, { type: "server_log", message: `Name gesetzt: ${client.name}` });
@@ -193,20 +209,10 @@ class RoomManager {
         case "chat_message":
           {
             const text = data.message ? String(data.message).slice(0, 1000) : "";
-            // broadcast to players in same room if client is in a room, otherwise broadcast globally
             if (client.roomId) {
               const room = this.rooms.get(client.roomId);
-              if (room) {
-                // send to each player in room
-                room.players.forEach((pid) => {
-                  const p = this.clients.get(pid);
-                  if (p && p.ws && p.ws.readyState === p.ws.OPEN) {
-                    this.send(p.ws, { type: "chat_message", from: client.name, message: text });
-                  }
-                });
-              }
+              if (room) this.broadcastToClientIds(room.players, { type: "chat_message", from: client.name, message: text });
             } else {
-              // global chat broadcast
               this.broadcast({ type: "chat_message", from: client.name, message: text });
             }
           }
@@ -219,6 +225,7 @@ class RoomManager {
               name: r.name,
               players: r.players.map((id) => this.clients.get(id)?.name || "unknown"),
               maxPlayers: r.maxPlayers,
+              hasGame: !!r.game,
             }));
             this.send(ws, { type: "room_update", rooms });
           }
@@ -231,7 +238,6 @@ class RoomManager {
             const room = this.createRoom(name, maxPlayers);
             // auto-join creator
             this.addClientToRoom(clientId, room.id);
-            // inform creator
             this.send(ws, { type: "server_log", message: `Raum erstellt und beigetreten: ${room.name}` });
             this.send(ws, { type: "joined_room", roomId: room.id });
           }
@@ -245,11 +251,8 @@ class RoomManager {
               break;
             }
             const res = this.addClientToRoom(clientId, roomId);
-            if (res.ok) {
-              this.send(ws, { type: "joined_room", roomId });
-            } else {
-              this.send(ws, { type: "server_log", message: `Beitritt fehlgeschlagen: ${res.reason}` });
-            }
+            if (res.ok) this.send(ws, { type: "joined_room", roomId });
+            else this.send(ws, { type: "server_log", message: `Beitritt fehlgeschlagen: ${res.reason}` });
           }
           break;
 
@@ -262,6 +265,35 @@ class RoomManager {
             } else {
               this.send(ws, { type: "server_log", message: "Kein Raum zu verlassen" });
             }
+          }
+          break;
+
+        // ---------- NEW: game controls ----------
+        case "start_game":
+          {
+            const roomId = data.roomId || client.roomId;
+            if (!roomId) {
+              this.send(ws, { type: "server_log", message: "Du bist in keinem Raum" });
+              break;
+            }
+            const opts = { startingScore: Number(data.startingScore) || 501 };
+            const res = this.startGameInRoom(roomId, opts);
+            if (!res.ok) this.send(ws, { type: "server_log", message: `Spielstart fehlgeschlagen: ${res.message}` });
+            // else: broadcast handled in startGameInRoom
+          }
+          break;
+
+        case "throw_dart":
+          {
+            const roomId = data.roomId || client.roomId;
+            const value = Number(data.value) || 0;
+            if (!roomId) {
+              this.send(ws, { type: "server_log", message: "Du bist in keinem Raum" });
+              break;
+            }
+            const res = this.handlePlayerThrow(clientId, roomId, value);
+            if (!res.ok) this.send(ws, { type: "server_log", message: `Wurf fehlgeschlagen: ${res.message}` });
+            // broadcast handled inside handlePlayerThrow
           }
           break;
 

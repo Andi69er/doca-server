@@ -1,182 +1,127 @@
-// gameLogic.js
 // ===========================================
-// Simple 501 SI/DO engine (Single In, Double Out).
-// - supports players as ws objects
-// - expects addPlayer(ws, meta), removePlayer(ws), start(), handleThrow(ws, payload)
-// - not persistent, lightweight for realtime play
+// gameLogic.js
+// Serverseitige Spiel-Engine für DOCA WebDarts
+// - Einfacher 501-Modus (kann erweitert werden)
+// - Exportiert Game-Klasse
 // ===========================================
 
-export class GameLogic {
-  constructor(roomId, sendToRoom) {
+/*
+ Game state (per Room):
+ {
+   id: 'room-xxxx',
+   mode: '501',
+   startingScore: 501,
+   players: [ clientId, ... ],
+   scores: { clientId: remainingScore, ... },
+   currentIndex: 0, // index in players[] whose turn it is
+   started: true/false,
+   lastThrow: { playerId, value, timestamp }
+ }
+*/
+
+export class Game {
+  constructor(roomId, players = [], startingScore = 501) {
     this.roomId = roomId;
-    this.sendToRoom = sendToRoom; // function(obj) -> broadcast to room
-    this.players = []; // [{ ws, meta, score, started }]
+    this.mode = "501";
+    this.startingScore = Number(startingScore) || 501;
+    this.players = Array.from(players); // clientIds
+    this.scores = {};
+    this.players.forEach((p) => (this.scores[p] = this.startingScore));
     this.currentIndex = 0;
     this.started = false;
-    this.startScore = 501;
+    this.lastThrow = null;
+    this.winner = null;
   }
 
-  addPlayer(ws, meta) {
-    // avoid duplicates
-    if (this.players.find((p) => p.ws === ws)) return;
-    this.players.push({
-      ws,
-      meta: { id: meta.id, username: meta.username },
-      score: this.startScore,
-      hasStarted: false, // for Single-In rule
-    });
-    this._broadcastState();
-  }
-
-  removePlayer(ws) {
-    this.players = this.players.filter((p) => p.ws !== ws);
-    if (this.currentIndex >= this.players.length) this.currentIndex = 0;
-    this._broadcastState();
-  }
-
-  getPlayersInfo() {
-    return this.players.map((p) => ({ id: p.meta.id, name: p.meta.username }));
-  }
-
+  // Start the game (if enough players)
   start() {
-    if (this.players.length < 1) return false;
+    if (this.players.length === 0) throw new Error("Keine Spieler im Raum");
     this.started = true;
     this.currentIndex = 0;
+    this.winner = null;
+    this.lastThrow = null;
     // reset scores
-    for (const p of this.players) {
-      p.score = this.startScore;
-      p.hasStarted = false;
-    }
-    this._broadcastState();
-    return true;
+    this.players.forEach((p) => (this.scores[p] = this.startingScore));
+    return this.getState();
   }
 
-  handleThrow(ws, payload = {}) {
-    if (!this.started) {
-      this.sendToRoom({ type: "info", message: "Kein Spiel aktiv." });
-      return;
+  // Add player (if joins after game created)
+  addPlayer(clientId) {
+    if (!this.players.includes(clientId)) {
+      this.players.push(clientId);
+      this.scores[clientId] = this.startingScore;
     }
-    const playerIndex = this.players.findIndex((p) => p.ws === ws);
-    if (playerIndex === -1) return;
-    if (playerIndex !== this.currentIndex) {
-      // only current player can throw
-      this.sendToRoom({ type: "info", message: `${this.players[playerIndex].meta.username} versucht zu werfen, aber ist nicht am Zug.` });
-      return;
-    }
-
-    // payload can be: { darts: [{value, mult},{...}] } OR { darts: [60, 20, 1] } simple formats
-    const darts = this._normalizePayload(payload);
-    // process sequentially: total of the three darts, but Single-In rule means first scoring hit starts score subtraction
-    let player = this.players[this.currentIndex];
-    let originalScore = player.score;
-    let tempScore = player.score;
-    let madeScoreIn = player.hasStarted; // if true, already in
-
-    // process each dart
-    for (const d of darts) {
-      if (!madeScoreIn) {
-        // Single-In: any non-zero single/triple/double counts as having started
-        if (d.total > 0) madeScoreIn = true;
-        if (!madeScoreIn) continue;
-      }
-      // apply
-      tempScore -= d.total;
-      // Bust rules: if tempScore < 0 -> bust, if tempScore == 1 -> bust (cannot finish on 1), if tempScore == 0 but last dart wasn't double -> bust (Double-out)
-      const lastWasDouble = d.mult === 2;
-      if (tempScore < 0 || tempScore === 1) {
-        // bust: reset to original score, end turn
-        tempScore = originalScore;
-        this.sendToRoom({ type: "info", message: `Bust! ${player.meta.username} bleibt bei ${originalScore}` });
-        this._advanceTurn();
-        this._broadcastState();
-        return;
-      }
-      if (tempScore === 0) {
-        // must end on double (Double Out)
-        if (!lastWasDouble) {
-          // invalid finish -> bust
-          tempScore = originalScore;
-          this.sendToRoom({ type: "info", message: `Finish muss Double sein! Bust.` });
-          this._advanceTurn();
-          this._broadcastState();
-          return;
-        } else {
-          // win
-          player.score = 0;
-          this.sendToRoom({
-            type: "game_over",
-            winner: { id: player.meta.id, name: player.meta.username },
-            room: this.roomId,
-          });
-          this.started = false;
-          this._broadcastState();
-          return;
-        }
-      }
-      // otherwise continue to next dart
-    }
-
-    // no bust, update score
-    player.score = tempScore;
-    player.hasStarted = madeScoreIn;
-    this.sendToRoom({
-      type: "score_update",
-      player: { id: player.meta.id, name: player.meta.username, score: player.score },
-      room: this.roomId,
-    });
-
-    // after turn, advance
-    this._advanceTurn();
-    this._broadcastState();
   }
 
-  _advanceTurn() {
-    if (this.players.length <= 1) return;
+  // Remove player
+  removePlayer(clientId) {
+    const i = this.players.indexOf(clientId);
+    if (i !== -1) this.players.splice(i, 1);
+    delete this.scores[clientId];
+    if (this.currentIndex >= this.players.length) this.currentIndex = 0;
+    if (this.players.length === 0) this.started = false;
+  }
+
+  // Player throws a dart — value is the points to subtract (integer)
+  // Returns result object { ok, state, message }
+  playerThrow(playerId, value) {
+    if (!this.started) return { ok: false, message: "Spiel läuft nicht" };
+    if (this.winner) return { ok: false, message: "Spiel bereits beendet" };
+    if (this.players[this.currentIndex] !== playerId)
+      return { ok: false, message: "Nicht dein Zug" };
+
+    const v = Number(value) || 0;
+    if (v < 0) return { ok: false, message: "Ungültiger Wurfwert" };
+
+    const prev = this.scores[playerId] ?? this.startingScore;
+    let newScore = prev - v;
+
+    // Bust rule: if score < 0 -> bust, reset to prev, advance turn
+    if (newScore < 0) {
+      this.lastThrow = { playerId, value: v, result: "bust", prev, newScore: prev, timestamp: Date.now() };
+      this.nextTurn();
+      return { ok: true, state: this.getState(), message: "Bust" };
+    }
+
+    // If newScore === 0 -> player wins
+    if (newScore === 0) {
+      this.scores[playerId] = 0;
+      this.winner = playerId;
+      this.lastThrow = { playerId, value: v, result: "win", prev, newScore: 0, timestamp: Date.now() };
+      this.started = false;
+      return { ok: true, state: this.getState(), message: "Gewinner" };
+    }
+
+    // Valid throw, update score and advance turn
+    this.scores[playerId] = newScore;
+    this.lastThrow = { playerId, value: v, result: "ok", prev, newScore, timestamp: Date.now() };
+    this.nextTurn();
+    return { ok: true, state: this.getState(), message: "Wurf angenommen" };
+  }
+
+  // advance to next player's turn
+  nextTurn() {
+    if (this.players.length === 0) {
+      this.currentIndex = 0;
+      return;
+    }
     this.currentIndex = (this.currentIndex + 1) % this.players.length;
   }
 
-  _broadcastState() {
-    const state = {
+  // Get full state serializable to send to clients
+  getState() {
+    return {
       type: "game_state",
-      players: this.players.map((p, idx) => ({
-        id: p.meta.id,
-        name: p.meta.username,
-        score: p.score,
-        active: idx === this.currentIndex,
-      })),
+      roomId: this.roomId,
+      mode: this.mode,
       started: this.started,
-      currentPlayer: this.players[this.currentIndex] ? this.players[this.currentIndex].meta.username : null,
+      players: this.players.slice(),
+      scores: { ...this.scores },
+      currentPlayerIndex: this.currentIndex,
+      currentPlayer: this.players[this.currentIndex] ?? null,
+      lastThrow: this.lastThrow,
+      winner: this.winner,
+      startingScore: this.startingScore,
     };
-    this.sendToRoom(state);
-  }
-
-  _normalizePayload(payload) {
-    // return array of dart objects {value, mult, total, isDouble, isTriple}
-    const out = [];
-    if (Array.isArray(payload.darts)) {
-      for (const d of payload.darts) {
-        if (typeof d === "number") {
-          // treat as single value
-          out.push({ value: d, mult: 1, total: d });
-        } else if (typeof d === "object") {
-          const value = Number(d.value || 0);
-          const mult = Number(d.mult || 1);
-          out.push({
-            value,
-            mult,
-            total: value * mult,
-            isDouble: mult === 2,
-            isTriple: mult === 3,
-          });
-        } else {
-          out.push({ value: 0, mult: 0, total: 0 });
-        }
-      }
-    } else if (payload.value) {
-      const value = Number(payload.value || 0);
-      const mult = Number(payload.mult || 1);
-      out.push({ value, mult, total: value * mult });
-    }
-    return out.slice(0, 3); // max 3 darts
   }
 }
