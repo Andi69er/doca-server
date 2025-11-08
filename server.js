@@ -1,99 +1,107 @@
 // ===========================================
-// DOCA WebDarts - Node.js WebSocket-Server (auth + room support)
+// DOCA WebDarts - Node.js WebSocket-Server (Auth + Sync)
 // ===========================================
 
 import WebSocket, { WebSocketServer } from "ws";
 import http from "http";
 import { roomManager } from "./roomManager.js";
 
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 8080;
 
-// HTTP-Server (Render braucht das)
+// HTTP-Server (Basis für WebSocket)
 const server = http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
   res.end("DOCA WebDarts WebSocket-Server läuft.");
 });
 
+// WebSocket-Server aufsetzen
 const wss = new WebSocketServer({ server });
+
+// Aktive Clients
 const clients = new Map();
 
+// ------------------------------
+// Hilfsfunktionen
+// ------------------------------
 function send(ws, obj) {
-  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(obj));
+  }
 }
 
-function broadcast(obj, exclude = null) {
-  for (const [client] of clients.entries()) {
-    if (client.readyState === WebSocket.OPEN && client !== exclude)
+function broadcast(obj, excludeWs = null) {
+  for (const [client] of clients) {
+    if (client.readyState === WebSocket.OPEN && client !== excludeWs) {
       client.send(JSON.stringify(obj));
+    }
   }
 }
 
 // ------------------------------
-// WebSocket Handling
+// Verbindungshandling
 // ------------------------------
 wss.on("connection", (ws, req) => {
-  console.log("🔌 Neue Verbindung hergestellt.");
+  const ip = req.socket.remoteAddress;
+  console.log(`🔌 Verbindung von ${ip}`);
 
   ws.isAuthenticated = false;
 
-  ws.on("message", (message) => {
+  ws.on("message", (msg) => {
     let data;
     try {
-      data = JSON.parse(message);
+      data = JSON.parse(msg);
     } catch {
-      console.error("❌ Ungültige Nachricht:", message);
+      console.error("❌ Ungültiges JSON:", msg);
       return;
     }
 
-    // 🔐 Authentifizierung prüfen
-    if (data.type === "auth") {
-      const username = data.user || "Gast";
+    // Authentifizierung
+    if (data.type === "auth" || data.type === "login") {
+      const user =
+        data.user && typeof data.user === "string" ? data.user : "Gast";
       const userId = data.id || Math.floor(Math.random() * 9999);
-      const sid = data.sid || "no-session";
-
       ws.isAuthenticated = true;
-      clients.set(ws, { username, userId, sid });
 
-      console.log(`✅ Authentifiziert: ${username} (#${userId}) [${sid}]`);
+      // 🆕 Benutzerinfo speichern
+      clients.set(ws, { id: userId, username: user, since: new Date() });
 
+      // 🆕 Rückmeldung an Client + Sync an andere
       send(ws, {
         type: "auth_ok",
-        user: { name: username, id: userId },
-        message: "Willkommen " + username + "!",
+        user: { id: userId, name: user },
+        online: Array.from(clients.values()),
       });
-
       broadcast(
-        { type: "info", message: `${username} ist jetzt online.` },
+        { type: "info", message: `${user} ist jetzt online.` },
         ws
       );
+
+      console.log(`✅ Benutzer authentifiziert: ${user} (#${userId})`);
       return;
     }
 
-    // Wenn nicht authentifiziert → Abweisen
+    // Wenn keine Authentifizierung vorhanden ist
     if (!ws.isAuthenticated) {
       send(ws, {
         type: "auth_failed",
-        message: "Du bist nicht eingeloggt! Bitte zuerst im Mitgliederbereich anmelden.",
+        message:
+          "Du bist nicht eingeloggt! Bitte zuerst im Mitgliederbereich anmelden.",
       });
       return;
     }
 
-    // ------------------------------
-    // Nachrichtenarten
-    // ------------------------------
+    // Spiel-Nachrichten
     switch (data.type) {
       case "ping":
         send(ws, { type: "pong", message: "Hallo zurück vom Server 👋" });
         break;
-
       case "join_room":
       case "throw":
       case "score":
         roomManager.handleMessage(ws, data);
         break;
-
       default:
-        console.log("⚠️ Unbekannter Nachrichtentyp:", data);
+        console.log("⚠️ Unbekannter Typ:", data);
     }
   });
 
