@@ -1,8 +1,10 @@
 // ===========================================
 // DOCA WebDarts - Raum- & Spielverwaltung
+// (mit integrierter 501 Double Out Game Logic)
 // ===========================================
 
 import WebSocket from "ws";
+import { GameLogic } from "./gameLogic.js";
 
 // ===============================
 // Hilfsfunktionen
@@ -26,11 +28,11 @@ function broadcast(room, obj) {
 // ===============================
 class RoomManager {
   constructor() {
-    this.rooms = new Map(); // key = roomId, value = {id, players[], state}
+    this.rooms = new Map(); // key = roomId, value = {id, players[], state, game}
     this.nextRoomId = 1;
   }
 
-  // Spieler will einem Raum beitreten oder neuen erstellen
+  // Haupt-Einstieg für eingehende WS-Nachrichten
   handleMessage(ws, data) {
     switch (data.type) {
       case "join_room":
@@ -46,12 +48,12 @@ class RoomManager {
         break;
 
       default:
-        console.log("⚠️ Unbekannte RoomManager-Nachricht:", data);
+        console.log("⚠️ Unbekannte Nachricht:", data);
     }
   }
 
   // ===================================
-  // Raum finden oder erstellen
+  // Spieler tritt einem Raum bei
   // ===================================
   joinRoom(ws, data) {
     const username = data.user || "Unbekannt";
@@ -62,7 +64,8 @@ class RoomManager {
       room = {
         id: this.nextRoomId++,
         players: [],
-        state: "waiting", // waiting | playing | finished
+        state: "waiting",
+        game: null,
       };
       this.rooms.set(room.id, room);
       console.log(`🆕 Neuer Raum #${room.id} erstellt.`);
@@ -77,14 +80,17 @@ class RoomManager {
       message: `🎯 ${username} ist dem Raum #${room.id} beigetreten.`,
     });
 
-    // Wenn zwei Spieler im Raum -> Spiel starten
+    // Wenn zwei Spieler da sind → Spiel starten
     if (room.players.length === 2) {
       room.state = "playing";
-      broadcast(room, {
-        type: "start_game",
+      room.game = new GameLogic(room.id, room.players);
+
+      room.game.broadcast({
+        type: "info",
         message: `🏁 Spiel startet zwischen ${room.players[0].username} und ${room.players[1].username}!`,
-        players: room.players.map((p) => p.username),
       });
+
+      room.game.updateClients();
     }
   }
 
@@ -101,19 +107,17 @@ class RoomManager {
   }
 
   // ===================================
-  // Wurf / Score behandeln
+  // Dartwurf behandeln
   // ===================================
   handleThrow(ws, data) {
     const room = this.findRoomByWs(ws);
-    if (!room) return;
-
-    broadcast(room, {
-      type: "throw",
-      player: data.user,
-      value: data.value,
-    });
+    if (!room || !room.game) return;
+    room.game.handleThrow(ws, data);
   }
 
+  // ===================================
+  // Score manuell aktualisieren (Reserve)
+  // ===================================
   handleScore(ws, data) {
     const room = this.findRoomByWs(ws);
     if (!room) return;
