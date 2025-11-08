@@ -1,222 +1,252 @@
-// ===========================================
-// roomManager.js — Raumverwaltung & Game-Controller (Server)
-// Vollständig, einsatzbereit
-// ===========================================
+// roomManager.js
+// -------------------------------------------
+// Raumverwaltung für DOCA WebDarts (vollständig)
+// -------------------------------------------
 
-import { createGameInstance } from "./gameLogic.js";
+// roomManager muss mit send/broadcast initialisiert werden,
+// damit er Nachrichten an Clients senden kann.
+// server.js ruft roomManager.init({ send, broadcast, clients }) beim Start auf.
 
-/*
-Structure:
-rooms: Map<roomId, {
-  id,
-  name,
-  players: Map<ws, {id, username}>,
-  game: GameInstance|null
-}>
-*/
+export const roomManager = (() => {
+  // Räume: Map<roomId, { id, name, players: [{ ws, id, username }], maxPlayers }>
+  const rooms = new Map();
 
-export const roomManager = {
-  rooms: new Map(),
-  nextRoomId: 1,
+  // Callback-Referenzen (werden von server.js gesetzt)
+  let sendFn = null;
+  let broadcastFn = null;
+  let clientsRef = null; // Map von server.js (optional)
 
-  // Handle incoming messages assigned to room/game functionality
-  handleMessage(ws, data) {
-    try {
-      switch (data.type) {
-        case "join_room":
-          return this.joinRoom(ws, data.room || `room-${this.nextRoomId}`);
-        case "leave_room":
-          return this.leaveRoom(ws, data.room);
-        case "start_game":
-          return this.startGame(ws, data.room, data.settings || {});
-        case "throw":
-          return this.playerThrow(ws, data);
-        case "score":
-          return this.playerScore(ws, data);
-        default:
-          console.log("roomManager: unbekannter Typ", data);
-      }
-    } catch (e) {
-      console.error("roomManager.handleMessage Fehler:", e);
+  // Hilfs: Erzeuge eine kurze ID
+  function makeId(prefix = "r") {
+    return `${prefix}_${Math.random().toString(36).slice(2, 9)}`;
+  }
+
+  function init({ send, broadcast, clients }) {
+    sendFn = send;
+    broadcastFn = broadcast;
+    clientsRef = clients || null;
+  }
+
+  // Serialisiere Räume (für Clients)
+  function snapshotRooms() {
+    const arr = [];
+    for (const [id, r] of rooms.entries()) {
+      arr.push({
+        id: r.id,
+        name: r.name,
+        players: r.players.map((p) => ({ id: p.id, username: p.username })),
+        maxPlayers: r.maxPlayers || 2,
+      });
     }
-  },
+    return arr;
+  }
 
-  createRoom(name) {
-    const id = `r${this.nextRoomId++}`;
-    const room = { id, name: name || id, players: new Map(), game: null };
-    this.rooms.set(id, room);
-    console.log(`🏠 Raum erstellt: ${id} (${room.name})`);
+  // Sendet die komplette Raum-Liste an alle
+  function broadcastRoomsList() {
+    if (!broadcastFn) return;
+    broadcastFn({ type: "rooms_list", rooms: snapshotRooms() });
+  }
+
+  // Erstelle einen Raum
+  function createRoom(ownerWs, opts = {}) {
+    const id = makeId("room");
+    const name = opts.name || `Raum ${rooms.size + 1}`;
+    const maxPlayers = opts.maxPlayers || 2;
+    const room = {
+      id,
+      name,
+      players: [],
+      maxPlayers,
+    };
+    rooms.set(id, room);
+
+    // Automatisch Besitzer beitreten lassen
+    if (ownerWs) {
+      joinRoom(ownerWs, { roomId: id });
+    }
+
+    broadcastRoomsList();
     return room;
-  },
+  }
 
-  getRoomByNameOrId(nameOrId) {
-    if (!nameOrId) return null;
-    // direct id
-    if (this.rooms.has(nameOrId)) return this.rooms.get(nameOrId);
-    // search by name
-    for (const r of this.rooms.values()) {
-      if (r.name === nameOrId) return r;
-    }
-    return null;
-  },
+  // Spieler joinen einem Raum
+  function joinRoom(ws, data = {}) {
+    const roomId = data.roomId || data.id || null;
 
-  joinRoom(ws, roomName) {
-    // find or create
-    let room = this.getRoomByNameOrId(roomName);
-    if (!room) {
-      room = this.createRoom(roomName);
-    }
-    // store player meta on ws for convenience
-    const meta = { id: ws.userId || null, username: ws.username || "Gast" };
-    room.players.set(ws, meta);
-
-    // attach reverse pointer for quick removal
-    ws._roomId = room.id;
-
-    // notify joining client
-    const playersList = Array.from(room.players.values()).map(p => p.username);
-    sendToWs(ws, {
-      type: "room_joined",
-      room: room.id,
-      roomName: room.name,
-      players: playersList,
-      message: `Du bist dem Raum "${room.name}" beigetreten.`,
-    });
-
-    // notify others in room
-    this.broadcastToRoom(room.id, {
-      type: "room_update",
-      room: room.id,
-      roomName: room.name,
-      players: playersList,
-      message: `${meta.username} ist dem Raum beigetreten.`,
-    }, ws);
-
-    console.log(`👥 ${meta.username} ist Raum ${room.id} beigetreten.`);
-  },
-
-  leaveRoom(ws, roomName) {
-    const roomId = ws._roomId;
-    if (!roomId) return;
-    const room = this.rooms.get(roomId);
-    if (!room) return;
-    const meta = room.players.get(ws);
-    room.players.delete(ws);
-    delete ws._roomId;
-
-    const playersList = Array.from(room.players.values()).map(p => p.username);
-    this.broadcastToRoom(room.id, {
-      type: "room_update",
-      room: room.id,
-      roomName: room.name,
-      players: playersList,
-      message: `${meta ? meta.username : "Ein Spieler"} hat den Raum verlassen.`,
-    });
-
-    // if no players left -> cleanup
-    if (room.players.size === 0) {
-      if (room.game && typeof room.game.destroy === "function") {
-        room.game.destroy();
-      }
-      this.rooms.delete(room.id);
-      console.log(`🧹 Raum ${room.id} gelöscht (leer).`);
-    }
-  },
-
-  startGame(ws, roomIdOrName, settings = {}) {
-    const room = this.getRoomByNameOrId(roomIdOrName || ws._roomId);
-    if (!room) {
-      sendToWs(ws, { type: "error", message: "Raum nicht gefunden." });
-      return;
-    }
-
-    // cannot start if less than 1 player
-    if (room.players.size < 1) {
-      sendToWs(ws, { type: "error", message: "Nicht genug Spieler zum Starten." });
-      return;
-    }
-
-    // create game instance if none
-    if (!room.game) {
-      const players = Array.from(room.players.values()).map((p, idx) => ({
-        id: p.id || idx + 1,
-        username: p.username || `Spieler${idx + 1}`,
-      }));
-      const game = createGameInstance(players, settings);
-      room.game = game;
-
-      // hook game events to broadcast to room
-      game.onUpdate = (payload) => {
-        this.broadcastToRoom(room.id, { type: "game_update", ...payload });
-      };
-      game.onEnd = (payload) => {
-        this.broadcastToRoom(room.id, { type: "game_end", ...payload });
-        room.game = null;
-      };
-    }
-
-    // start the game
-    room.game.start();
-    this.broadcastToRoom(room.id, {
-      type: "start_game",
-      room: room.id,
-      players: Array.from(room.players.values()).map(p => p.username),
-      message: `Spiel startet im Raum ${room.name}`,
-    });
-    console.log(`▶ Spiel gestartet in Raum ${room.id}`);
-  },
-
-  playerThrow(ws, data) {
-    const roomId = ws._roomId;
+    // Wenn RaumId nicht gegeben, suche einen freien Raum (optional)
+    let targetRoom = null;
     if (!roomId) {
-      sendToWs(ws, { type: "error", message: "Du bist in keinem Raum." });
-      return;
-    }
-    const room = this.rooms.get(roomId);
-    if (!room || !room.game) {
-      sendToWs(ws, { type: "error", message: "Kein Spiel aktiv." });
-      return;
-    }
-    // expect data.payload: { segment: 20, multiplier: 3 } or data.value
-    room.game.playerThrow(ws.userId || ws.username, data);
-  },
-
-  playerScore(ws, data) {
-    // generic passthrough to game
-    const roomId = ws._roomId;
-    if (!roomId) return;
-    const room = this.rooms.get(roomId);
-    if (!room || !room.game) return;
-    room.game.playerScore(ws.userId || ws.username, data);
-  },
-
-  broadcastToRoom(roomId, obj, excludeWs = null) {
-    const room = this.rooms.get(roomId);
-    if (!room) return;
-    const payload = JSON.stringify(obj);
-    for (const client of room.players.keys()) {
-      if (client.readyState === 1 && client !== excludeWs) {
-        client.send(payload);
+      // finde offenen Raum mit Platz
+      for (const r of rooms.values()) {
+        if ((r.players.length || 0) < (r.maxPlayers || 2)) {
+          targetRoom = r;
+          break;
+        }
+      }
+      // wenn keiner, erstelle einen
+      if (!targetRoom) {
+        targetRoom = createRoom(null, { name: "Auto-Raum" });
+      }
+    } else {
+      targetRoom = rooms.get(roomId);
+      if (!targetRoom) {
+        // Raum nicht gefunden -> sende Fehler an Client
+        if (sendFn) {
+          sendFn(ws, { type: "error", message: "Raum nicht gefunden", roomId });
+        }
+        return;
+      }
+      if ((targetRoom.players.length || 0) >= (targetRoom.maxPlayers || 2)) {
+        if (sendFn) {
+          sendFn(ws, { type: "error", message: "Raum ist voll", roomId });
+        }
+        return;
       }
     }
-  },
 
-  // utility: get list of rooms (for UI if needed)
-  listRooms() {
-    return Array.from(this.rooms.values()).map(r => ({
-      id: r.id,
-      name: r.name,
-      playerCount: r.players.size,
-      gameActive: !!r.game,
-    }));
-  }
-};
+    // Falls der Client schon in einem Raum ist, zuerst raus
+    leaveRoom(ws);
 
-// helper: safe send
-function sendToWs(ws, obj) {
-  try {
-    if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
-  } catch (e) {
-    console.error("sendToWs Error:", e);
+    const player = {
+      ws,
+      id: ws.userId || ws._tempId || Math.floor(Math.random() * 999999),
+      username: ws.username || "Gast",
+    };
+    targetRoom.players.push(player);
+
+    // Markiere auf ws, wo er ist
+    ws.roomId = targetRoom.id;
+
+    // Sende join confirmation an den joinenden Client
+    if (sendFn) {
+      sendFn(ws, {
+        type: "room_joined",
+        room: {
+          id: targetRoom.id,
+          name: targetRoom.name,
+          players: targetRoom.players.map((p) => ({ id: p.id, username: p.username })),
+        },
+      });
+    }
+
+    // Broadcast update
+    if (broadcastFn) {
+      broadcastFn({
+        type: "room_update",
+        room: {
+          id: targetRoom.id,
+          name: targetRoom.name,
+          players: targetRoom.players.map((p) => ({ id: p.id, username: p.username })),
+          maxPlayers: targetRoom.maxPlayers,
+        },
+      });
+      // Und die komplette Raumliste (optional)
+      broadcastRoomsList();
+    }
+
+    return targetRoom;
   }
-}
+
+  // Spieler verlässt aktuellen Raum
+  function leaveRoom(ws) {
+    const rid = ws.roomId;
+    if (!rid) return;
+
+    const room = rooms.get(rid);
+    if (!room) {
+      delete ws.roomId;
+      return;
+    }
+
+    // Entferne den Spieler
+    const idx = room.players.findIndex((p) => p.ws === ws);
+    if (idx !== -1) room.players.splice(idx, 1);
+
+    // Unset roomId
+    delete ws.roomId;
+
+    // Wenn Raum leer ist, entferne Raum
+    if (!room.players || room.players.length === 0) {
+      rooms.delete(rid);
+    }
+
+    // Broadcast update
+    if (broadcastFn) {
+      broadcastFn({
+        type: "room_update",
+        room: rooms.has(rid)
+          ? {
+              id: room.id,
+              name: room.name,
+              players: room.players.map((p) => ({ id: p.id, username: p.username })),
+              maxPlayers: room.maxPlayers,
+            }
+          : { id: rid, deleted: true },
+      });
+      broadcastRoomsList();
+    }
+  }
+
+  // Wenn Verbindungen schließen: ein einzelner ws kann alle Räume verlassen
+  function leaveAll(ws) {
+    // aktuell nur ein Raum pro ws vorgesehen
+    leaveRoom(ws);
+  }
+
+  // Handler für Nachrichten vom Server
+  function handleMessage(ws, data) {
+    if (!data || !data.type) return;
+
+    switch (data.type) {
+      case "create_room":
+        // name / maxPlayers optional
+        createRoom(ws, { name: data.name, maxPlayers: data.maxPlayers });
+        break;
+
+      case "join_room":
+        joinRoom(ws, data);
+        break;
+
+      case "leave_room":
+        leaveRoom(ws);
+        break;
+
+      case "list_rooms":
+        // sende komplette Liste an den anfragenden Client
+        if (sendFn) {
+          sendFn(ws, { type: "rooms_list", rooms: snapshotRooms() });
+        }
+        break;
+
+      case "start_game":
+        // Hier nur ein Broadcast, echte Startlogik kommt später
+        if (broadcastFn && ws.roomId) {
+          const room = rooms.get(ws.roomId);
+          if (room) {
+            broadcastFn({
+              type: "start_game",
+              roomId: room.id,
+              players: room.players.map((p) => ({ id: p.id, username: p.username })),
+            }, /*exclude*/ null);
+          }
+        }
+        break;
+
+      default:
+        // Unbekannter Typ wird ignoriert hier
+        break;
+    }
+  }
+
+  // Public API
+  return {
+    init,
+    createRoom,
+    joinRoom,
+    leaveRoom,
+    leaveAll,
+    handleMessage,
+    snapshotRooms,
+    broadcastRoomsList,
+  };
+})();
