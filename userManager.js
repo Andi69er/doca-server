@@ -2,48 +2,46 @@
 const users = new Map();
 
 /**
- * Einen neuen Benutzer registrieren
+ * Benutzer hinzufügen
  */
 export function addUser(id, ws) {
   users.set(id, ws);
-  console.log(`✅ Benutzer hinzugefügt: ${id}`);
+  console.log(`✅ Benutzer verbunden: ${id}`);
 }
 
 /**
- * Benutzer entfernen, wenn Verbindung getrennt wurde
+ * Benutzer entfernen
  */
 export function removeUser(id) {
   users.delete(id);
-  console.log(`❌ Benutzer entfernt: ${id}`);
+  console.log(`❌ Benutzer getrennt: ${id}`);
 }
 
 /**
- * Nachricht an einen bestimmten Client senden
+ * Nachricht an spezifischen Client
  */
 export function sendToClient(id, message) {
   const ws = users.get(id);
   if (ws && ws.readyState === ws.OPEN) {
     ws.send(JSON.stringify(message));
-  } else {
-    console.warn(`⚠️ sendToClient: Verbindung zu ${id} nicht offen`);
   }
 }
 
 /**
- * Nachricht an alle Clients senden (Broadcast)
+ * Nachricht an alle Clients (optional mit Ausschluss)
  */
 export function broadcast(message, exceptId = null) {
-  const json = JSON.stringify(message);
+  const data = JSON.stringify(message);
   for (const [id, ws] of users) {
-    if (id !== exceptId && ws.readyState === ws.OPEN) {
-      ws.send(json);
+    if (ws.readyState === ws.OPEN && id !== exceptId) {
+      ws.send(data);
     }
   }
 }
 
 /**
- * Aktuelle Liste aller verbundenen Benutzer zurückgeben
+ * Liste aller verbundenen Benutzer
  */
-export function listUsers() {
+export function getAllUsers() {
   return Array.from(users.keys());
 }
