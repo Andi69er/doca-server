@@ -54,7 +54,7 @@ function updateRooms() {
 // Hauptverbindung
 // ============================================================
 
-function handleConnection(ws) {
+function handleConnection(ws, req) {
   const clientId = genId("p");
   const name = `Gast-${clientId.slice(-3)}`;
   clients.set(ws, { id: clientId, name, roomId: null });
@@ -105,38 +105,37 @@ function handleMessage(ws, data) {
   const c = clients.get(ws);
   if (!c) return;
 
-  // -------- Signalling (WebRTC) ------------
+  // -------- WebRTC Signalling ------------
   if (data.type === "signal") {
     const targetId = data.to;
     for (const [sock, info] of clients.entries()) {
       if (info.id === targetId) {
-        const payload = {
+        send(sock, {
           type: "signal",
           from: c.id,
           signalType: data.signalType,
           data: data.data,
-        };
-        send(sock, payload);
+        });
         return;
       }
     }
     return;
   }
 
-  // -------- Ping/Pong ----------------------
+  // -------- Ping/Pong --------------------
   if (data.type === "ping") {
     send(ws, { type: "pong", message: data.message || "pong" });
     return;
   }
 
-  // -------- Chat ---------------------------
+  // -------- Chat -------------------------
   if (data.type === "chat_message") {
     if (!c.roomId) return;
     broadcast(c.roomId, { type: "chat_message", from: c.name, message: data.message });
     return;
   }
 
-  // -------- Raum erstellen -----------------
+  // -------- Raum erstellen ---------------
   if (data.type === "create_room") {
     const rid = genId("r");
     const room = {
@@ -154,7 +153,7 @@ function handleMessage(ws, data) {
     return;
   }
 
-  // -------- Raum beitreten -----------------
+  // -------- Raum beitreten ---------------
   if (data.type === "join_room") {
     const room = rooms.get(data.roomId);
     if (!room) {
@@ -174,7 +173,7 @@ function handleMessage(ws, data) {
     return;
   }
 
-  // -------- Raum verlassen -----------------
+  // -------- Raum verlassen ---------------
   if (data.type === "leave_room") {
     const room = rooms.get(c.roomId);
     if (room) {
@@ -188,7 +187,7 @@ function handleMessage(ws, data) {
     return;
   }
 
-  // -------- Spiel starten ------------------
+  // -------- Spiel starten ----------------
   if (data.type === "start_game") {
     const room = rooms.get(c.roomId);
     if (!room || !room.game) return;
@@ -206,7 +205,7 @@ function handleMessage(ws, data) {
     return;
   }
 
-  // -------- Wurf ---------------------------
+  // -------- Wurf -------------------------
   if (data.type === "throw_dart") {
     const room = rooms.get(c.roomId);
     if (!room || !room.game) return;
@@ -215,7 +214,7 @@ function handleMessage(ws, data) {
     return;
   }
 
-  // -------- Undo ---------------------------
+  // -------- Undo -------------------------
   if (data.type === "undo_throw") {
     const room = rooms.get(c.roomId);
     if (!room || !room.game) return;
@@ -225,7 +224,7 @@ function handleMessage(ws, data) {
     return;
   }
 
-  // -------- Bulling ------------------------
+  // -------- Bulling ----------------------
   if (data.type === "bull_shot") {
     const room = rooms.get(c.roomId);
     if (!room || !room.game) return;
@@ -234,7 +233,7 @@ function handleMessage(ws, data) {
     return;
   }
 
-  // -------- Raumliste anfordern ------------
+  // -------- Raumliste anfordern ----------
   if (data.type === "request_room_members") {
     const room = rooms.get(c.roomId);
     if (!room) return;
@@ -246,16 +245,17 @@ function handleMessage(ws, data) {
     return;
   }
 
-  // -------- Unbekannt ----------------------
+  // -------- Unbekannt --------------------
   send(ws, { type: "server_log", message: `Unbekannter Typ: ${data.type}` });
 }
 
 // ============================================================
-// Export
+// Richtiger Export für ES-Import
 // ============================================================
 
 export const roomManager = {
   handleConnection,
+  handleMessage,
   broadcast,
   send,
 };
