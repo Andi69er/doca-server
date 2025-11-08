@@ -1,21 +1,23 @@
 // ===========================================
-// DOCA WebDarts - Node.js WebSocket-Server (final)
+// DOCA WebDarts - Node.js WebSocket-Server (final stable)
 // ===========================================
 
 import WebSocket, { WebSocketServer } from "ws";
 import http from "http";
-import { roomManager } from "./roomManager.js";
+import { roomManager } from "./roomManager.js"; // muss export haben!
 
 const PORT = process.env.PORT || 8080;
 
 // HTTP-Server (Basis für WebSocket)
 const server = http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("DOCA WebDarts WebSocket-Server läuft.");
+  res.end("DOCA WebDarts WebSocket-Server läuft erfolgreich 🚀");
 });
 
-// WebSocket-Server
+// WebSocket-Server aufsetzen
 const wss = new WebSocketServer({ server });
+
+// Aktive Clients
 const clients = new Map();
 
 // ------------------------------
@@ -27,9 +29,9 @@ function send(ws, obj) {
   }
 }
 
-function broadcast(obj, exclude = null) {
-  for (const [client] of clients.entries()) {
-    if (client.readyState === WebSocket.OPEN && client !== exclude) {
+function broadcast(obj, excludeWs = null) {
+  for (const [client] of clients) {
+    if (client.readyState === WebSocket.OPEN && client !== excludeWs) {
       client.send(JSON.stringify(obj));
     }
   }
@@ -39,40 +41,64 @@ function broadcast(obj, exclude = null) {
 // Verbindungshandling
 // ------------------------------
 wss.on("connection", (ws, req) => {
-  console.log("🔌 Neue Verbindung hergestellt.");
+  const ip = req.socket.remoteAddress;
+  console.log(`🔌 Verbindung von ${ip}`);
+  ws.isAuthenticated = false;
 
-  ws.on("message", (message) => {
+  ws.on("message", (msg) => {
     let data;
     try {
-      data = JSON.parse(message);
-    } catch {
-      console.error("❌ Ungültige Nachricht:", message);
+      data = JSON.parse(msg);
+    } catch (err) {
+      console.error("❌ Ungültiges JSON:", msg);
       return;
     }
 
-    switch (data.type) {
-      case "login":
-        clients.set(ws, { username: data.user || "Gast" });
-        console.log(`✅ ${data.user || "Gast"} verbunden.`);
-        send(ws, { type: "info", message: `Willkommen, ${data.user || "Gast"}!` });
-        broadcast(
-          { type: "info", message: `${data.user || "Gast"} ist jetzt online.` },
-          ws
-        );
-        break;
+    // Authentifizierung
+    if (data.type === "auth" || data.type === "login") {
+      const user = data.user && typeof data.user === "string" ? data.user : "Gast";
+      const userId = data.id || Math.floor(Math.random() * 9999);
+      ws.isAuthenticated = true;
 
+      clients.set(ws, { id: userId, username: user, since: new Date() });
+      console.log(`✅ Benutzer authentifiziert: ${user} (#${userId})`);
+
+      send(ws, {
+        type: "auth_ok",
+        user: { id: userId, name: user },
+        online: Array.from(clients.values()),
+      });
+
+      broadcast({ type: "info", message: `${user} ist jetzt online.` }, ws);
+      return;
+    }
+
+    // Authentifizierungsprüfung
+    if (!ws.isAuthenticated) {
+      send(ws, {
+        type: "auth_failed",
+        message: "Du bist nicht eingeloggt! Bitte zuerst im Mitgliederbereich anmelden.",
+      });
+      return;
+    }
+
+    // Spielnachrichten
+    switch (data.type) {
       case "ping":
         send(ws, { type: "pong", message: "Hallo zurück vom Server 👋" });
         break;
-
       case "join_room":
       case "throw":
       case "score":
-        roomManager.handleMessage(ws, data);
+        try {
+          roomManager.handleMessage(ws, data);
+        } catch (err) {
+          console.error("❌ Fehler in roomManager:", err);
+          send(ws, { type: "error", message: "Serverfehler beim Spiel-Handling." });
+        }
         break;
-
       default:
-        console.log("⚠️ Unbekannter Nachrichtentyp:", data);
+        console.log("⚠️ Unbekannter Typ:", data);
     }
   });
 
