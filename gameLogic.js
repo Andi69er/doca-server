@@ -1,23 +1,5 @@
-// ===========================================
 // gameLogic.js
-// Serverseitige Spiel-Engine für DOCA WebDarts
-// - Einfacher 501-Modus (kann erweitert werden)
-// - Exportiert Game-Klasse
-// ===========================================
-
-/*
- Game state (per Room):
- {
-   id: 'room-xxxx',
-   mode: '501',
-   startingScore: 501,
-   players: [ clientId, ... ],
-   scores: { clientId: remainingScore, ... },
-   currentIndex: 0, // index in players[] whose turn it is
-   started: true/false,
-   lastThrow: { playerId, value, timestamp }
- }
-*/
+// Serverseitige Spiel-Engine für DOCA WebDarts (501-Modus)
 
 export class Game {
   constructor(roomId, players = [], startingScore = 501) {
@@ -33,19 +15,16 @@ export class Game {
     this.winner = null;
   }
 
-  // Start the game (if enough players)
   start() {
     if (this.players.length === 0) throw new Error("Keine Spieler im Raum");
     this.started = true;
     this.currentIndex = 0;
     this.winner = null;
     this.lastThrow = null;
-    // reset scores
     this.players.forEach((p) => (this.scores[p] = this.startingScore));
     return this.getState();
   }
 
-  // Add player (if joins after game created)
   addPlayer(clientId) {
     if (!this.players.includes(clientId)) {
       this.players.push(clientId);
@@ -53,7 +32,6 @@ export class Game {
     }
   }
 
-  // Remove player
   removePlayer(clientId) {
     const i = this.players.indexOf(clientId);
     if (i !== -1) this.players.splice(i, 1);
@@ -62,8 +40,6 @@ export class Game {
     if (this.players.length === 0) this.started = false;
   }
 
-  // Player throws a dart — value is the points to subtract (integer)
-  // Returns result object { ok, state, message }
   playerThrow(playerId, value) {
     if (!this.started) return { ok: false, message: "Spiel läuft nicht" };
     if (this.winner) return { ok: false, message: "Spiel bereits beendet" };
@@ -76,14 +52,14 @@ export class Game {
     const prev = this.scores[playerId] ?? this.startingScore;
     let newScore = prev - v;
 
-    // Bust rule: if score < 0 -> bust, reset to prev, advance turn
+    // Bust: Score < 0 -> bust, reset to prev, advance turn
     if (newScore < 0) {
       this.lastThrow = { playerId, value: v, result: "bust", prev, newScore: prev, timestamp: Date.now() };
       this.nextTurn();
       return { ok: true, state: this.getState(), message: "Bust" };
     }
 
-    // If newScore === 0 -> player wins
+    // Win condition
     if (newScore === 0) {
       this.scores[playerId] = 0;
       this.winner = playerId;
@@ -92,14 +68,13 @@ export class Game {
       return { ok: true, state: this.getState(), message: "Gewinner" };
     }
 
-    // Valid throw, update score and advance turn
+    // Normal update
     this.scores[playerId] = newScore;
     this.lastThrow = { playerId, value: v, result: "ok", prev, newScore, timestamp: Date.now() };
     this.nextTurn();
     return { ok: true, state: this.getState(), message: "Wurf angenommen" };
   }
 
-  // advance to next player's turn
   nextTurn() {
     if (this.players.length === 0) {
       this.currentIndex = 0;
@@ -108,7 +83,6 @@ export class Game {
     this.currentIndex = (this.currentIndex + 1) % this.players.length;
   }
 
-  // Get full state serializable to send to clients
   getState() {
     return {
       type: "game_state",
