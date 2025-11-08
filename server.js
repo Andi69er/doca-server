@@ -1,8 +1,6 @@
-// server.js
 // ===========================================
-// DOCA WebDarts - Node.js WebSocket-Server
+// DOCA WebDarts - Node.js WebSocket Server
 // ===========================================
-
 import http from "http";
 import { WebSocketServer } from "ws";
 import { roomManager } from "./roomManager.js";
@@ -18,10 +16,10 @@ const wss = new WebSocketServer({ server });
 
 wss.on("connection", (ws, req) => {
   console.log("🔌 Neue Verbindung hergestellt.");
-  // delegiere alles an roomManager (welches die client-Map verwaltet)
   roomManager.handleConnection(ws, req);
 });
 
 server.listen(PORT, () => {
   console.log(`🚀 DOCA WebDarts-Server läuft auf Port ${PORT}`);
+  console.log("Your service is live 🎉");
 });
