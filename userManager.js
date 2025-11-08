@@ -1,38 +1,49 @@
 // userManager.js
-import fetch from "node-fetch";
+const users = new Map();
 
 /**
- * Prüft eine PHP-Session-ID gegen deine DOCA-PHP-API.
- * Erwartet eine URL wie: https://www.doca.at/api/check_session.php?sid=...
- * Die API sollte JSON zurückgeben: { success: true, user: { id:..., name:... } }
+ * Einen neuen Benutzer registrieren
  */
-const DOCA_SESSION_CHECK_URL = "https://www.doca.at/webservices/check_session.php";
+export function addUser(id, ws) {
+  users.set(id, ws);
+  console.log(`✅ Benutzer hinzugefügt: ${id}`);
+}
 
 /**
- * checkUserSession(sid)
- * @param {string} sid - PHPSESSID
- * @returns {Promise<{success:boolean, user?:object, message?:string}>}
+ * Benutzer entfernen, wenn Verbindung getrennt wurde
  */
-export async function checkUserSession(sid) {
-  if (!sid) return { success: false, message: "no sid" };
+export function removeUser(id) {
+  users.delete(id);
+  console.log(`❌ Benutzer entfernt: ${id}`);
+}
 
-  try {
-    const url = new URL(DOCA_SESSION_CHECK_URL);
-    url.searchParams.set("sid", sid);
-
-    const res = await fetch(url.toString(), { method: "GET", timeout: 5000 });
-    if (!res.ok) {
-      return { success: false, message: `http ${res.status}` };
-    }
-
-    const json = await res.json();
-    if (json && json.success) {
-      return { success: true, user: json.user };
-    } else {
-      return { success: false, message: json?.message || "invalid session" };
-    }
-  } catch (err) {
-    console.error("userManager.checkUserSession error:", err);
-    return { success: false, message: "error" };
+/**
+ * Nachricht an einen bestimmten Client senden
+ */
+export function sendToClient(id, message) {
+  const ws = users.get(id);
+  if (ws && ws.readyState === ws.OPEN) {
+    ws.send(JSON.stringify(message));
+  } else {
+    console.warn(`⚠️ sendToClient: Verbindung zu ${id} nicht offen`);
   }
+}
+
+/**
+ * Nachricht an alle Clients senden (Broadcast)
+ */
+export function broadcast(message, exceptId = null) {
+  const json = JSON.stringify(message);
+  for (const [id, ws] of users) {
+    if (id !== exceptId && ws.readyState === ws.OPEN) {
+      ws.send(json);
+    }
+  }
+}
+
+/**
+ * Aktuelle Liste aller verbundenen Benutzer zurückgeben
+ */
+export function listUsers() {
+  return Array.from(users.keys());
 }
