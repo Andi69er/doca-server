@@ -1,8 +1,5 @@
-// ============================================================
-// DOCA WebDarts PRO – erweiterte Spielengine (kompatibel mit ES Modules)
-// ============================================================
-// Enthält: Standard 301–1001, Cricket, DoubleIn/Out, MasterOut, Undo, Bulling
-// ============================================================
+// gameLogic.js
+// DOCA WebDarts PRO – erweiterte Spielengine (ES Module)
 
 function deepCopy(obj) {
   return JSON.parse(JSON.stringify(obj));
@@ -241,7 +238,7 @@ class Game {
       timestamp: Date.now(),
     };
 
-    // --- Cricket
+    // Cricket
     if (this.mode === "cricket") {
       const t = Number(value);
       if (![20, 19, 18, 17, 16, 15, 25].includes(t))
@@ -256,7 +253,7 @@ class Game {
       return { ok: true, state: this.getState(), message: "Cricket hit" };
     }
 
-    // --- Standard X01
+    // Standard X01
     const scored = val * m;
     if (this.doubleIn && !this.opened[playerId]) {
       if (m === 2) this.opened[playerId] = true;
@@ -325,7 +322,4 @@ class Game {
   }
 }
 
-// ============================================================
-// Richtiger ES-Modul-Export
-// ============================================================
 export { Game };

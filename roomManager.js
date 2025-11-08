@@ -1,6 +1,5 @@
-// ============================================================
+// roomManager.js
 // DOCA WebDarts PRO – Raum-, Spiel- und Signalling-Manager
-// ============================================================
 
 import { Game } from "./gameLogic.js";
 
@@ -50,10 +49,7 @@ function updateRooms() {
   broadcastAll({ type: "room_update", rooms: list });
 }
 
-// ============================================================
-// Hauptverbindung
-// ============================================================
-
+// Handle new connection
 function handleConnection(ws, req) {
   const clientId = genId("p");
   const name = `Gast-${clientId.slice(-3)}`;
@@ -76,10 +72,6 @@ function handleConnection(ws, req) {
   ws.on("close", () => handleDisconnect(ws));
 }
 
-// ============================================================
-// Disconnect
-// ============================================================
-
 function handleDisconnect(ws) {
   const c = clients.get(ws);
   if (!c) return;
@@ -97,15 +89,11 @@ function handleDisconnect(ws) {
   updateRooms();
 }
 
-// ============================================================
-// Nachrichtenhandler
-// ============================================================
-
 function handleMessage(ws, data) {
   const c = clients.get(ws);
   if (!c) return;
 
-  // -------- WebRTC Signalling ------------
+  // Signalling (WebRTC)
   if (data.type === "signal") {
     const targetId = data.to;
     for (const [sock, info] of clients.entries()) {
@@ -122,20 +110,20 @@ function handleMessage(ws, data) {
     return;
   }
 
-  // -------- Ping/Pong --------------------
+  // Ping
   if (data.type === "ping") {
     send(ws, { type: "pong", message: data.message || "pong" });
     return;
   }
 
-  // -------- Chat -------------------------
+  // Chat
   if (data.type === "chat_message") {
     if (!c.roomId) return;
     broadcast(c.roomId, { type: "chat_message", from: c.name, message: data.message });
     return;
   }
 
-  // -------- Raum erstellen ---------------
+  // Create room
   if (data.type === "create_room") {
     const rid = genId("r");
     const room = {
@@ -153,7 +141,7 @@ function handleMessage(ws, data) {
     return;
   }
 
-  // -------- Raum beitreten ---------------
+  // Join room
   if (data.type === "join_room") {
     const room = rooms.get(data.roomId);
     if (!room) {
@@ -173,7 +161,7 @@ function handleMessage(ws, data) {
     return;
   }
 
-  // -------- Raum verlassen ---------------
+  // Leave room
   if (data.type === "leave_room") {
     const room = rooms.get(c.roomId);
     if (room) {
@@ -187,7 +175,7 @@ function handleMessage(ws, data) {
     return;
   }
 
-  // -------- Spiel starten ----------------
+  // Start game
   if (data.type === "start_game") {
     const room = rooms.get(c.roomId);
     if (!room || !room.game) return;
@@ -205,7 +193,7 @@ function handleMessage(ws, data) {
     return;
   }
 
-  // -------- Wurf -------------------------
+  // Throw
   if (data.type === "throw_dart") {
     const room = rooms.get(c.roomId);
     if (!room || !room.game) return;
@@ -214,7 +202,7 @@ function handleMessage(ws, data) {
     return;
   }
 
-  // -------- Undo -------------------------
+  // Undo
   if (data.type === "undo_throw") {
     const room = rooms.get(c.roomId);
     if (!room || !room.game) return;
@@ -224,7 +212,7 @@ function handleMessage(ws, data) {
     return;
   }
 
-  // -------- Bulling ----------------------
+  // Bull shot
   if (data.type === "bull_shot") {
     const room = rooms.get(c.roomId);
     if (!room || !room.game) return;
@@ -233,7 +221,7 @@ function handleMessage(ws, data) {
     return;
   }
 
-  // -------- Raumliste anfordern ----------
+  // Request room members
   if (data.type === "request_room_members") {
     const room = rooms.get(c.roomId);
     if (!room) return;
@@ -245,13 +233,9 @@ function handleMessage(ws, data) {
     return;
   }
 
-  // -------- Unbekannt --------------------
+  // Unknown
   send(ws, { type: "server_log", message: `Unbekannter Typ: ${data.type}` });
 }
-
-// ============================================================
-// Richtiger Export für ES-Import
-// ============================================================
 
 export const roomManager = {
   handleConnection,
