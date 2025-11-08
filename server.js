@@ -1,91 +1,104 @@
 // ===========================================
-// DOCA WebDarts - Node.js WebSocket-Server
+// DOCA WebDarts - Node.js WebSocket-Server (v2 Auth-fix)
 // ===========================================
 
 import WebSocket, { WebSocketServer } from "ws";
 import http from "http";
 import url from "url";
-import { roomManager } from "./roomManager.js"; // (folgt im nächsten Schritt)
+import { roomManager } from "./roomManager.js";
 
 const PORT = process.env.PORT || 8080;
 
-// HTTP-Server (nur als Basis für WS)
+// HTTP-Server (Basis für WebSocket)
 const server = http.createServer((req, res) => {
-  res.writeHead(200);
+  res.writeHead(200, { "Content-Type": "text/plain" });
   res.end("DOCA WebDarts WebSocket-Server läuft.");
 });
 
 // WebSocket-Server aufsetzen
 const wss = new WebSocketServer({ server });
 
-// ===============================
 // Aktive Clients
-// ===============================
-const clients = new Map(); // key: ws, value: {id, username, connectedAt}
+const clients = new Map();
 
-// ===============================
-// Helper
-// ===============================
-function broadcast(message, excludeWs = null) {
-  for (const [client, info] of clients.entries()) {
-    if (client.readyState === WebSocket.OPEN && client !== excludeWs) {
-      client.send(JSON.stringify(message));
-    }
-  }
-}
-
+// ------------------------------
+// Hilfsfunktionen
+// ------------------------------
 function send(ws, obj) {
   if (ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(obj));
   }
 }
 
-// ===============================
-// Hauptlogik
-// ===============================
+function broadcast(obj, excludeWs = null) {
+  for (const [client] of clients) {
+    if (client.readyState === WebSocket.OPEN && client !== excludeWs) {
+      client.send(JSON.stringify(obj));
+    }
+  }
+}
+
+// ------------------------------
+// Verbindungshandling
+// ------------------------------
 wss.on("connection", (ws, req) => {
   const ip = req.socket.remoteAddress;
-  console.log(`🔌 Neue Verbindung von ${ip}`);
+  console.log(`🔌 Verbindung von ${ip}`);
 
-  ws.on("message", (message) => {
+  ws.isAuthenticated = false;
+
+  ws.on("message", (msg) => {
     let data;
     try {
-      data = JSON.parse(message);
+      data = JSON.parse(msg);
     } catch {
-      console.error("❌ Ungültiges JSON:", message);
+      console.error("❌ Ungültiges JSON:", msg);
       return;
     }
 
-    switch (data.type) {
-      // Benutzer loggt sich ein
-      case "login":
-        clients.set(ws, {
-          id: data.id,
-          username: data.user,
-          connectedAt: new Date(),
-        });
-        console.log(`✅ ${data.user} (#${data.id}) verbunden.`);
-        send(ws, { type: "info", message: `Willkommen ${data.user}!` });
-        broadcast({
-          type: "info",
-          message: `${data.user} ist jetzt online.`,
-        }, ws);
-        break;
+    // Authentifizierung
+    if (data.type === "auth" || data.type === "login") {
+      const user =
+        data.user && typeof data.user === "string" ? data.user : "Gast";
+      const userId = data.id || Math.floor(Math.random() * 9999);
+      ws.isAuthenticated = true;
 
-      // Testnachricht vom Client
+      clients.set(ws, { id: userId, username: user, since: new Date() });
+      console.log(`✅ Benutzer authentifiziert: ${user} (#${userId})`);
+
+      send(ws, {
+        type: "auth_ok",
+        user: { id: userId, name: user },
+        online: Array.from(clients.values()),
+      });
+
+      broadcast(
+        { type: "info", message: `${user} ist jetzt online.` },
+        ws
+      );
+      return;
+    }
+
+    if (!ws.isAuthenticated) {
+      send(ws, {
+        type: "auth_failed",
+        message: "Du bist nicht eingeloggt! Bitte zuerst im Mitgliederbereich anmelden.",
+      });
+      return;
+    }
+
+    // Spiel-Nachrichten
+    switch (data.type) {
       case "ping":
         send(ws, { type: "pong", message: "Hallo zurück vom Server 👋" });
         break;
-
-      // Später: Spielaktionen
+      case "join_room":
       case "throw":
       case "score":
-      case "join_room":
         roomManager.handleMessage(ws, data);
         break;
-
       default:
-        console.log("⚠️ Unbekannter Nachrichtentyp:", data);
+        console.log("⚠️ Unbekannter Typ:", data);
     }
   });
 
