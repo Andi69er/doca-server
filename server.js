@@ -1,49 +1,39 @@
 // ===========================================
-// DOCA WebDarts - Node.js WebSocket-Server (v3 AUTH-FIX + stabil)
+// DOCA WebDarts - Node.js WebSocket-Server (auth + room support)
 // ===========================================
 
 import WebSocket, { WebSocketServer } from "ws";
 import http from "http";
 import { roomManager } from "./roomManager.js";
 
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 10000;
 
-// ----------------------------------------------------
-// HTTP-Server (nur für Statusanzeige / Basis für WS)
-// ----------------------------------------------------
+// HTTP-Server (Render braucht das)
 const server = http.createServer((req, res) => {
-  res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
-  res.end("🎯 DOCA WebDarts WebSocket-Server läuft stabil auf Render ✅");
+  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.end("DOCA WebDarts WebSocket-Server läuft.");
 });
 
-// ----------------------------------------------------
-// WebSocket-Server
-// ----------------------------------------------------
 const wss = new WebSocketServer({ server });
-const clients = new Map(); // key: ws, value: { id, username, since }
+const clients = new Map();
 
-// ----------------------------------------------------
-// Helper-Funktionen
-// ----------------------------------------------------
 function send(ws, obj) {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(obj));
-  }
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
 
 function broadcast(obj, exclude = null) {
   for (const [client] of clients.entries()) {
-    if (client.readyState === WebSocket.OPEN && client !== exclude) {
+    if (client.readyState === WebSocket.OPEN && client !== exclude)
       client.send(JSON.stringify(obj));
-    }
   }
 }
 
-// ----------------------------------------------------
-// Hauptlogik für alle Verbindungen
-// ----------------------------------------------------
-wss.on("connection", (ws) => {
+// ------------------------------
+// WebSocket Handling
+// ------------------------------
+wss.on("connection", (ws, req) => {
   console.log("🔌 Neue Verbindung hergestellt.");
+
   ws.isAuthenticated = false;
 
   ws.on("message", (message) => {
@@ -55,40 +45,42 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    // ----------------------------------------------------
-    // Authentifizierung (aus PHP-Session oder Login)
-    // ----------------------------------------------------
-    if (data.type === "auth" || data.type === "login") {
-      const user = data.user || "Gast";
+    // 🔐 Authentifizierung prüfen
+    if (data.type === "auth") {
+      const username = data.user || "Gast";
       const userId = data.id || Math.floor(Math.random() * 9999);
+      const sid = data.sid || "no-session";
+
       ws.isAuthenticated = true;
+      clients.set(ws, { username, userId, sid });
 
-      clients.set(ws, { id: userId, username: user, since: new Date() });
+      console.log(`✅ Authentifiziert: ${username} (#${userId}) [${sid}]`);
 
-      console.log(`✅ Benutzer authentifiziert: ${user} (#${userId})`);
-      send(ws, { type: "auth_ok", message: `Willkommen ${user}!` });
+      send(ws, {
+        type: "auth_ok",
+        user: { name: username, id: userId },
+        message: "Willkommen " + username + "!",
+      });
 
       broadcast(
-        { type: "info", message: `${user} ist jetzt online.` },
+        { type: "info", message: `${username} ist jetzt online.` },
         ws
       );
       return;
     }
 
-    // ----------------------------------------------------
-    // Kein Login → Zugriff verweigert
-    // ----------------------------------------------------
+    // Wenn nicht authentifiziert → Abweisen
     if (!ws.isAuthenticated) {
       send(ws, {
         type: "auth_failed",
-        message: "❌ Du bist nicht eingeloggt! Bitte zuerst im Mitgliederbereich anmelden.",
+        message: "Du bist nicht eingeloggt! Bitte zuerst im Mitgliederbereich anmelden.",
       });
       return;
     }
 
-    // ----------------------------------------------------
-    // Spiel- / Kontrollnachrichten
-    // ----------------------------------------------------
+    // ------------------------------
+    // Nachrichtenarten
+    // ------------------------------
     switch (data.type) {
       case "ping":
         send(ws, { type: "pong", message: "Hallo zurück vom Server 👋" });
@@ -105,9 +97,6 @@ wss.on("connection", (ws) => {
     }
   });
 
-  // ----------------------------------------------------
-  // Verbindung schließen
-  // ----------------------------------------------------
   ws.on("close", () => {
     const info = clients.get(ws);
     if (info) {
@@ -121,9 +110,6 @@ wss.on("connection", (ws) => {
   });
 });
 
-// ----------------------------------------------------
-// Serverstart
-// ----------------------------------------------------
 server.listen(PORT, () => {
   console.log(`🚀 DOCA WebDarts-Server läuft auf Port ${PORT}`);
 });
