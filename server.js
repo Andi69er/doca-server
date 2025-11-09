@@ -1,5 +1,5 @@
-// server.js — DOCA WebDarts PRO Server (vollständige Datei)
-// Copy & Paste
+// server.js — DOCA WebDarts PRO Server (mit list_online Support)
+// Vollständige Datei — Copy & Paste
 
 import { WebSocketServer } from "ws";
 import {
@@ -10,19 +10,27 @@ import {
   setUserName,
   broadcast,
   sendToClient,
-  broadcastToPlayers,
-  findClientIdByName
+  broadcastToPlayers
 } from "./userManager.js";
-import { createRoom, joinRoom, leaveRoom, getRoomByClientId, updateRoomList, getRoomState } from "./roomManager.js";
+import {
+  createRoom,
+  joinRoom,
+  leaveRoom,
+  getRoomByClientId,
+  updateRoomList,
+  getRoomState
+} from "./roomManager.js";
 import { Game } from "./gameLogic.js";
 
 const PORT = process.env.PORT || 10000;
 const wss = new WebSocketServer({ port: PORT });
 console.log(`🚀 DOCA WebDarts Server läuft auf Port ${PORT}`);
 
+globalThis.cleanupTimers = {};
+
 wss.on("connection", (ws) => {
   const clientId = registerClient(ws);
-  console.log(`+ client connected: ${clientId}`);
+  console.log(`+ Client verbunden: ${clientId}`);
 
   ws.on("message", (msg) => {
     let data = null;
@@ -32,92 +40,70 @@ wss.on("connection", (ws) => {
       console.error("❌ Ungültige JSON-Nachricht:", e);
       return;
     }
-    try {
-      handleMessage(ws, clientId, data);
-    } catch (e) {
-      console.error("handleMessage error:", e);
-    }
+    handleMessage(ws, clientId, data);
   });
 
   ws.on("close", () => {
-    console.log(`- client disconnected: ${clientId}`);
-    // schedule a short cleanup: allows quick reconnects to re-use username if necessary
-    if (globalThis.cleanupTimers[clientId]) clearTimeout(globalThis.cleanupTimers[clientId]);
+    console.log(`- Verbindung geschlossen: ${clientId}`);
+    if (globalThis.cleanupTimers[clientId])
+      clearTimeout(globalThis.cleanupTimers[clientId]);
     globalThis.cleanupTimers[clientId] = setTimeout(() => {
       try {
-        const username = getUserName(clientId);
-        // ensure client removed from rooms
         leaveRoom(clientId);
         removeClient(clientId);
-        // inform lobby
         broadcast({ type: "online_list", users: getOnlineUserNames() });
         updateRoomList();
-        console.log(`cleanup completed for ${clientId} (${username})`);
       } catch (e) {
-        console.error("cleanup error:", e);
+        console.error("Cleanup Error:", e);
       } finally {
         if (globalThis.cleanupTimers[clientId]) {
           clearTimeout(globalThis.cleanupTimers[clientId]);
           delete globalThis.cleanupTimers[clientId];
         }
       }
-    }, 3000); // 3s grace window
+    }, 3000);
   });
-
-  // optional: ping/pong handling omitted for brevity
 });
 
-/**
- * Helper: enrich Game state with player names for frontend convenience
- */
 function getEnrichedGameState(game) {
-  const raw = game.getState();
-  raw.playerNames = raw.players.map(pid => getUserName(pid));
-  return raw;
+  const state = game.getState();
+  state.playerNames = state.players.map((pid) => getUserName(pid));
+  return state;
 }
 
 function handleMessage(ws, clientId, data) {
   if (!data || !data.type) return;
-  const type = (data.type || "").toString();
-
-  // Authentication / identification
-  if (type === "auth") {
-    const username = (data.user || `Gast-${clientId}`).toString();
-    // cancel any pending cleanup for this clientId
-    if (globalThis.cleanupTimers[clientId]) {
-      clearTimeout(globalThis.cleanupTimers[clientId]);
-      delete globalThis.cleanupTimers[clientId];
-    }
-    setUserName(clientId, username);
-    // send back connected ack
-    sendToClient(clientId, { type: "connected", clientId, name: username });
-    // broadcast online list & rooms
-    broadcast({ type: "online_list", users: getOnlineUserNames() });
-    updateRoomList();
-    return;
-  }
-
-  // Resolve room for client, many actions require room context
-  const room = getRoomByClientId(clientId);
+  const type = data.type.toLowerCase();
 
   switch (type) {
+    case "auth": {
+      const username = data.user || `Gast-${clientId}`;
+      if (globalThis.cleanupTimers[clientId]) {
+        clearTimeout(globalThis.cleanupTimers[clientId]);
+        delete globalThis.cleanupTimers[clientId];
+      }
+      setUserName(clientId, username);
+      sendToClient(clientId, { type: "connected", clientId, name: username });
+      broadcast({ type: "online_list", users: getOnlineUserNames() });
+      updateRoomList();
+      break;
+    }
+
+    case "list_online": {
+      sendToClient(clientId, { type: "online_list", users: getOnlineUserNames() });
+      break;
+    }
+
     case "create_room": {
-      const name = data.name || `Raum-${Math.random().toString(36).slice(2,6)}`;
-      const options = Object.assign({}, data);
-      createRoom(clientId, name, options);
-      // updateRoomList() gets called by createRoom
+      createRoom(clientId, data.name, data);
       break;
     }
 
     case "join_room": {
-      const roomId = data.roomId;
-      if (!roomId) break;
-      joinRoom(clientId, roomId);
-      // After joining, send full room/game_state to players in that room
+      joinRoom(clientId, data.roomId);
       const joinedRoom = getRoomByClientId(clientId);
       if (joinedRoom) {
-        const state = getRoomState(joinedRoom.id);
-        broadcastToPlayers(joinedRoom.players, state);
+        broadcastToPlayers(joinedRoom.players, getRoomState(joinedRoom.id));
       }
       break;
     }
@@ -133,52 +119,46 @@ function handleMessage(ws, clientId, data) {
     }
 
     case "start_game": {
-      if (!room) break;
-      // only owner can start and require 2 players
-      if (room.ownerId === clientId && (room.players.length >= 1)) {
-        room.options = Object.assign({}, room.options, data.options || {});
-        room.game = new Game(room.players.slice(), room.options);
+      const room = getRoomByClientId(clientId);
+      if (room && room.ownerId === clientId && room.players.length >= 1) {
+        room.game = new Game(room.players, room.options);
         room.game.start();
-        // send initial game state to players
         broadcastToPlayers(room.players, getEnrichedGameState(room.game));
       }
       break;
     }
 
     case "player_throw": {
-      if (!room || !room.game) break;
-      // value & mult expected
-      room.game.playerThrow(clientId, Number(data.value || 0), Number(data.mult || 1));
-      broadcastToPlayers(room.players, getEnrichedGameState(room.game));
-      break;
-    }
-
-    case "undo_throw": {
-      if (!room || !room.game) break;
-      room.game.undoLastThrow(clientId);
-      broadcastToPlayers(room.players, getEnrichedGameState(room.game));
-      break;
-    }
-
-    case "request_room_members": {
-      const rid = data.roomId || (room && room.id);
-      if (rid && globalThis.rooms[rid]) {
-        const r = globalThis.rooms[rid];
-        sendToClient(clientId, { type: "room_members", roomId: rid, members: r.players.map(pid => ({ id: pid, name: getUserName(pid) })) });
+      const room = getRoomByClientId(clientId);
+      if (room && room.game) {
+        room.game.playerThrow(clientId, data.value, data.mult);
+        broadcastToPlayers(room.players, getEnrichedGameState(room.game));
       }
       break;
     }
 
-    case "chat":
+    case "undo_throw": {
+      const room = getRoomByClientId(clientId);
+      if (room && room.game) {
+        room.game.undoLastThrow(clientId);
+        broadcastToPlayers(room.players, getEnrichedGameState(room.game));
+      }
+      break;
+    }
+
     case "chat_global": {
-      // broadcast chat to lobby (or room if room-specific - simple global)
-      const payload = { type: "chat_global", user: getUserName(clientId) || `Gast-${clientId}`, message: data.message || "" };
-      broadcast(payload);
+      const msg = {
+        type: "chat_global",
+        user: getUserName(clientId),
+        message: data.message || "",
+        time: Date.now(),
+      };
+      broadcast(msg);
       break;
     }
 
     default: {
-      console.warn("⚠️ Unbekannter Nachrichtentyp:", type);
+      console.warn("⚠️ Unbekannter Nachrichtentyp:", data.type);
     }
   }
 }
