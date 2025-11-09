@@ -1,8 +1,8 @@
 // server.js — DOCA WebDarts PRO Server
 import { WebSocketServer } from "ws";
 import { registerClient, removeClient, getUserName, getOnlineUserNames, setUserName, broadcast, sendToClient, broadcastToPlayers, findClientIdByName } from "./userManager.js";
-import { createRoom, joinRoom, leaveRoom, getRoomByClientId, updateRoomList } from "./roomManager.js";
-import { Game } from "./gameLogic.js"; // Die Spiellogik wieder importieren
+import { createRoom, joinRoom, leaveRoom, getRoomByClientId, updateRoomList, broadcastRoomState } from "./roomManager.js"; // broadcastRoomState importieren
+import { Game } from "./gameLogic.js";
 
 const PORT = process.env.PORT || 10000;
 const wss = new WebSocketServer({ port: PORT });
@@ -10,7 +10,6 @@ console.log(`🚀 DOCA WebDarts Server läuft auf Port ${PORT}`);
 
 globalThis.cleanupTimers = {};
 
-// Helfer, um den Spielzustand mit Namen anzureichern
 function getEnrichedGameState(game) {
     const state = game.getState();
     state.playerNames = state.players.map(pid => getUserName(pid));
@@ -20,9 +19,7 @@ function getEnrichedGameState(game) {
 function cleanupUser(username) {
     const clientId = findClientIdByName(username);
     if (clientId) {
-        console.log(`⏰ Timer für ${username} abgelaufen. Aufräumen.`);
-        leaveRoom(clientId);
-        removeClient(clientId);
+        leaveRoom(clientId); removeClient(clientId);
         broadcast({ type: "online_list", users: getOnlineUserNames() });
     }
     delete globalThis.cleanupTimers[username];
@@ -30,7 +27,6 @@ function cleanupUser(username) {
 
 wss.on("connection", (ws) => {
   const clientId = registerClient(ws);
-  console.log(`✅ Benutzer verbunden: ${clientId}`);
   ws.send(JSON.stringify({ type: "connected", clientId, name: getUserName(clientId) }));
   broadcast({ type: "online_list", users: getOnlineUserNames() });
   updateRoomList();
@@ -43,7 +39,6 @@ wss.on("connection", (ws) => {
   ws.on("close", () => {
     const username = getUserName(clientId);
     if (username && !username.startsWith("Gast-")) {
-        console.log(`⌛️ Verbindung von ${username} getrennt. Starte 5s Timer.`);
         if (globalThis.cleanupTimers[username]) clearTimeout(globalThis.cleanupTimers[username]);
         globalThis.cleanupTimers[username] = setTimeout(() => cleanupUser(username), 5000);
     } else {
@@ -56,7 +51,6 @@ function handleMessage(ws, clientId, data) {
   if (data.type === "auth" && data.user) {
       const username = data.user;
       if (globalThis.cleanupTimers[username]) {
-          console.log(`↪️ ${username} zurückgemeldet. Timer gestoppt.`);
           clearTimeout(globalThis.cleanupTimers[username]);
           delete globalThis.cleanupTimers[username];
       }
@@ -65,7 +59,6 @@ function handleMessage(ws, clientId, data) {
   const room = getRoomByClientId(clientId);
 
   switch (data.type) {
-    // --- LOBBY & AUTH ---
     case "auth": setUserName(clientId, data.user); break;
     case "chat_global": broadcast({ type: "chat_global", user: getUserName(clientId), message: data.message }); break;
     case "create_room": createRoom(clientId, data.name, data); break;
@@ -74,7 +67,14 @@ function handleMessage(ws, clientId, data) {
     case "list_rooms": updateRoomList(); break;
     case "list_online": sendToClient(clientId, { type: "online_list", users: getOnlineUserNames() }); break;
     
-    // --- SPIEL-NACHRICHTEN (WIEDER HINZUGEFÜGT) ---
+    // --- DAS IST DER NEUE BEFEHL ---
+    case "request_room_info":
+        if (room) {
+            console.log(`Client ${clientId} fordert Infos für Raum ${room.id} an. Sende...`);
+            broadcastRoomState(room.id);
+        }
+        break;
+
     case "start_game":
         if (room && room.ownerId === clientId && room.players.length === 2) {
             room.game = new Game(room.players, room.options);
