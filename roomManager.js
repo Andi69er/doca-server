@@ -3,51 +3,57 @@ import { broadcast, sendToClient, getUserName, broadcastToPlayers } from "./user
 
 globalThis.rooms = {};
 
-// Neue Funktion, die einen sauberen "Pre-Game"-Zustand sendet
-export function getRoomState(roomId) {
+function broadcastRoomState(roomId) {
     const room = globalThis.rooms[roomId];
-    if (!room) return null;
-    return {
-        type: "game_state",
-        isStarted: false,
+    if (!room) return;
+    const playerNames = room.players.map(pid => getUserName(pid));
+    const roomState = {
+        type: "room_player_update",
+        roomId: room.id,
         players: room.players,
-        playerNames: room.players.map(pid => getUserName(pid)),
-        scores: room.players.reduce((acc, pid) => {
-            acc[pid] = parseInt(room.options.distance) || 501;
-            return acc;
-        }, {}),
-        currentPlayerId: null,
-        winner: null,
-        options: room.options,
-        liveStats: {},
+        playerNames: playerNames,
         isFull: room.players.length === room.maxPlayers,
         ownerId: room.ownerId
     };
+    if (room.players.length > 0) {
+        broadcastToPlayers(room.players, roomState);
+    }
 }
 
-export function createRoom(clientId, name = "Neuer Raum", options = {}) {
+function createRoom(clientId, name = "Neuer Raum", options = {}) {
   const id = Math.random().toString(36).substring(2, 8);
-  const room = { id, name, ownerId: clientId, players: [], maxPlayers: 2, options, game: null };
+  const room = { id, name, ownerId: clientId, players: [], maxPlayers: 2, options, game: null, createdAt: Date.now() };
   globalThis.rooms[id] = room;
   console.log(`🎯 Raum erstellt: ${name} (${id})`);
   joinRoom(clientId, id);
 }
 
-export function joinRoom(clientId, roomId) {
+function joinRoom(clientId, roomId) {
   const room = globalThis.rooms[roomId];
-  if (!room) return;
+  if (!room) {
+    console.error(`Fehler: Raum ${roomId} nicht gefunden.`);
+    return;
+  }
   
   leaveRoom(clientId, false); 
   
-  if (!room.players.includes(clientId) && room.players.length < room.maxPlayers) {
+  if (room.players.length < room.maxPlayers && !room.players.includes(clientId)) {
     room.players.push(clientId);
     globalThis.userRooms[clientId] = roomId;
+    sendToClient(clientId, { type: "joined_room", roomId: roomId });
   }
   
   updateRoomList();
+
+  // --- DAS IST DIE ENTSCHEIDENDE KORREKTUR ---
+  // Wir warten einen winzigen Moment, um sicherzustellen, dass alle Namens-Updates
+  // verarbeitet wurden, bevor wir den Zustand an die Spiel-UI senden.
+  setTimeout(() => {
+    broadcastRoomState(roomId);
+  }, 100); // 100 Millisekunden Verzögerung
 }
 
-export function leaveRoom(clientId, doUpdate = true) {
+function leaveRoom(clientId, doUpdate = true) {
   const rid = globalThis.userRooms[clientId];
   if (!rid || !globalThis.rooms[rid]) return;
   
@@ -56,10 +62,11 @@ export function leaveRoom(clientId, doUpdate = true) {
   delete globalThis.userRooms[clientId];
 
   if (room.players.length === 0) {
+    console.log(`Raum ${rid} ist leer und wird gelöscht.`);
     delete globalThis.rooms[rid];
   } else {
     if (room.ownerId === clientId) { room.ownerId = room.players[0]; }
-    broadcastToPlayers(room.players, getRoomState(rid));
+    broadcastRoomState(rid);
   }
   
   if (doUpdate) {
@@ -67,16 +74,19 @@ export function leaveRoom(clientId, doUpdate = true) {
   }
 }
 
-export function getRoomByClientId(cid) {
+function getRoomByClientId(cid) {
   const rid = globalThis.userRooms[cid];
   return rid ? globalThis.rooms[rid] : null;
 }
 
-export function updateRoomList() {
+function updateRoomList() {
   const list = Object.values(globalThis.rooms).map((r) => ({
     id: r.id, name: r.name, owner: getUserName(r.ownerId),
+    players: r.players.map((p) => getUserName(p)),
     playerCount: r.players.length, maxPlayers: r.maxPlayers,
     ...(r.options || {}),
   }));
   broadcast({ type: "room_update", rooms: list });
 }
+
+export { createRoom, joinRoom, leaveRoom, getRoomByClientId, updateRoomList, broadcastRoomState };
