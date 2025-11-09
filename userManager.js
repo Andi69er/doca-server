@@ -39,17 +39,6 @@ function broadcast(obj) {
   }
 }
 
-// NEUE FUNKTION: Sendet eine Nachricht nur an bestimmte Spieler
-export function broadcastToPlayers(playerIds, obj) {
-    const msg = JSON.stringify(obj);
-    playerIds.forEach(id => {
-        const ws = globalThis.clients[id];
-        if (ws && ws.readyState === ws.OPEN) {
-            ws.send(msg);
-        }
-    });
-}
-
 function broadcastOnlineList() {
     broadcast({ type: "online_list", users: getOnlineUserNames() });
 }
