@@ -1,10 +1,16 @@
 import express from "express";
 import http from "http";
 import { WebSocketServer } from "ws";
-import RoomManager from "./roomManager.js";
-import UserManager from "./userManager.js";
-import pkg from "./gameLogic.js"; // akzeptiert CJS oder ESM
-const GameLogic = pkg.GameLogic || pkg; // <-- funktioniert in beiden Fällen
+
+// ---- Dynamische Kompatibilität für CommonJS und ESModule ----
+import * as roomMod from "./roomManager.js";
+import * as userMod from "./userManager.js";
+import * as gameMod from "./gameLogic.js";
+
+const RoomManager = roomMod.RoomManager || roomMod.default || roomMod;
+const UserManager = userMod.UserManager || userMod.default || userMod;
+const GameLogic = gameMod.GameLogic || gameMod.default || gameMod;
+// -------------------------------------------------------------
 
 const app = express();
 const server = http.createServer(app);
@@ -23,7 +29,7 @@ wss.on("connection", (ws) => {
     let data;
     try {
       data = JSON.parse(message);
-    } catch (e) {
+    } catch {
       console.error("❌ Ungültiges JSON:", message);
       return;
     }
@@ -31,17 +37,15 @@ wss.on("connection", (ws) => {
     const { type, payload } = data;
 
     switch (type) {
-      case "login": {
+      case "login":
         userManager.addUser(ws, payload.username);
         broadcastOnlineList();
         break;
-      }
 
-      case "logout": {
+      case "logout":
         userManager.removeUser(ws);
         broadcastOnlineList();
         break;
-      }
 
       case "create_room": {
         const room = roomManager.createRoom(payload.username, payload.mode);
@@ -64,11 +68,7 @@ wss.on("connection", (ws) => {
 
         roomManager.broadcastToRoom(roomId, {
           type: "room_update",
-          payload: {
-            roomId,
-            players,
-            status: "waiting"
-          }
+          payload: { roomId, players, status: "waiting" }
         });
 
         console.log(`👥 Spieler ${username} ist Raum ${roomId} beigetreten.`);
@@ -97,10 +97,9 @@ wss.on("connection", (ws) => {
         break;
       }
 
-      case "score_input": {
+      case "score_input":
         gameLogic.handleScoreInput(payload);
         break;
-      }
 
       default:
         console.warn("⚠️ Unbekannter Nachrichtentyp:", type);
