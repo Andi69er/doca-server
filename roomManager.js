@@ -1,5 +1,5 @@
 // roomManager.js
-import { broadcast, sendToClient } from "./userManager.js";
+import { broadcast, sendToClient, getUserName } from "./userManager.js";
 
 class RoomManager {
   constructor() {
@@ -9,8 +9,9 @@ class RoomManager {
   /**
    * Raum erstellen
    */
-  createRoom(clientId, name = "Neuer Raum", options = {}, creatorName = "Unbekannt") {
+  createRoom(clientId, name = "Neuer Raum", options = {}) {
     const id = "r" + Math.random().toString(36).substr(2, 6);
+    const creatorName = getUserName(clientId) || "Gast";
 
     const roomData = {
       id,
@@ -18,12 +19,12 @@ class RoomManager {
       players: [clientId],
       maxPlayers: 2,
       options: {
-        startingScore: options.startingScore || 501,
+        startingScore: Number(options.startingScore) || 501,
         finishType: options.finishType || "double_out",
         doubleIn: !!options.doubleIn,
-        startChoice: options.startChoice || "first"
+        startChoice: options.startChoice || "first",
       },
-      creatorName
+      creatorName,
     };
 
     this.rooms.set(id, roomData);
@@ -33,50 +34,47 @@ class RoomManager {
   }
 
   /**
-   * Raumliste an alle senden
+   * Raum beitreten
    */
-  updateRooms() {
-    broadcast({
-      type: "room_update",
-      rooms: Array.from(this.rooms.values())
-    });
+  joinRoom(clientId, roomId) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+    if (room.players.includes(clientId)) return;
+    if (room.players.length >= room.maxPlayers) return;
+
+    room.players.push(clientId);
+    this.updateRooms();
   }
 
   /**
-   * Nachricht vom Client verarbeiten
+   * Raum verlassen
    */
-  handleMessage(ws, data, clientId) {
-    switch (data.type) {
-      case "create_room":
-        // Fallback für alte Clients
-        const creatorName = data.creatorName || "Unbekannt";
-        const roomId = this.createRoom(clientId, data.name, {
-          startingScore: data.startingScore,
-          finishType: data.finishType,
-          doubleIn: data.doubleIn,
-          startChoice: data.startChoice
-        }, creatorName);
-
-        sendToClient(clientId, { type: "joined_room", roomId });
-        break;
-
-      case "list_rooms":
-        sendToClient(clientId, {
-          type: "room_update",
-          rooms: Array.from(this.rooms.values())
-        });
-        break;
-
-      default:
-        // Nur wirklich Unbekanntes loggen
-        if (data.type !== "list_online" && data.type !== "auth") {
-          sendToClient(clientId, {
-            type: "server_log",
-            message: `Unbekannter Typ: ${data.type}`
-          });
+  leaveRoom(clientId) {
+    for (const [id, room] of this.rooms.entries()) {
+      if (room.players.includes(clientId)) {
+        room.players = room.players.filter((p) => p !== clientId);
+        if (room.players.length === 0) {
+          this.rooms.delete(id);
         }
+        this.updateRooms();
         break;
+      }
     }
+  }
+
+  /**
+   * Räume an alle Clients senden
+   */
+  updateRooms() {
+    const list = [...this.rooms.values()].map((r) => ({
+      id: r.id,
+      name: r.name,
+      players: r.players,
+      maxPlayers: r.maxPlayers,
+      creatorName: r.creatorName,
+      options: r.options,
+    }));
+    broadcast({ type: "room_update", rooms: list });
   }
 }
 

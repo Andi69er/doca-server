@@ -1,82 +1,95 @@
 // server.js
-import http from "http";
-import { WebSocketServer } from "ws";
+import WebSocket, { WebSocketServer } from "ws";
 import { roomManager } from "./roomManager.js";
-import { addUser, removeUser, getOnlineList, sendToClient, broadcast } from "./userManager.js";
+import { userManager, getUserName } from "./userManager.js";
+import { gameLogic } from "./gameLogic.js";
 
 const PORT = process.env.PORT || 10000;
-const server = http.createServer();
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ port: PORT });
 
-wss.on("connection", (ws, req) => {
-  const clientId = Math.random().toString(36).substring(2, 8);
-  addUser(clientId, ws);
+console.log(`🚀 DOCA WebDarts Server läuft auf Port ${PORT}`);
+
+wss.on("connection", (ws) => {
+  const clientId = Math.random().toString(36).substr(2, 6);
+  userManager.addClient(clientId, ws);
+
   console.log(`✅ Benutzer verbunden: ${clientId}`);
+  sendToClient(ws, { type: "connected", clientId });
 
-  // Begrüßungsnachricht
-  sendToClient(clientId, {
-    type: "server_log",
-    message: `Willkommen ${clientId}`
-  });
-
-  // Nachricht vom Client empfangen
-  ws.on("message", msg => {
+  ws.on("message", (msgRaw) => {
+    let msg;
     try {
-      const data = JSON.parse(msg);
-
-      switch (data.type) {
-
-        // --- LOGIN / AUTH ---
-        case "auth":
-          if (data.user) {
-            ws.username = data.user;
-            console.log(`👤 Authentifiziert: ${data.user} (${clientId})`);
-          }
-          // Sende sofort aktualisierte Online-Liste an alle
-          broadcast({
-            type: "list_online",
-            users: getOnlineList()
-          });
-          break;
-
-        // --- ONLINE LIST ANFORDERUNG ---
-        case "list_online":
-          sendToClient(clientId, {
-            type: "list_online",
-            users: getOnlineList()
-          });
-          break;
-
-        // --- ROOM EVENTS ---
-        case "create_room":
-        case "list_rooms":
-          roomManager.handleMessage(ws, data, clientId);
-          break;
-
-        // --- UNBEKANNTE NACHRICHTEN ---
-        default:
-          // stilles Ignorieren, kein Spam mehr im Log
-          break;
-      }
-
+      msg = JSON.parse(msgRaw);
     } catch (e) {
-      console.error("❌ Fehler beim Parsen:", e);
+      console.error("❌ Ungültige Nachricht", msgRaw);
+      return;
     }
+
+    handleMessage(clientId, msg);
   });
 
-  // Verbindung geschlossen
   ws.on("close", () => {
-    removeUser(clientId);
     console.log(`❌ Benutzer getrennt: ${clientId}`);
-
-    // Aktualisierte Online-Liste an alle senden
-    broadcast({
-      type: "list_online",
-      users: getOnlineList()
-    });
+    roomManager.leaveRoom(clientId);
+    userManager.removeClient(clientId);
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`🚀 DOCA WebDarts Server läuft auf Port ${PORT}`);
-});
+function handleMessage(clientId, msg) {
+  switch (msg.type) {
+    case "auth":
+      userManager.setUserName(clientId, msg.name);
+      console.log(`👤 Authentifiziert: ${msg.name} (${clientId})`);
+      break;
+
+    case "create_room":
+      roomManager.createRoom(clientId, msg.name, msg.options || {});
+      break;
+
+    case "join_room":
+      roomManager.joinRoom(clientId, msg.roomId);
+      break;
+
+    case "leave_room":
+      roomManager.leaveRoom(clientId);
+      break;
+
+    case "list_rooms":
+      roomManager.updateRooms();
+      break;
+
+    case "ping":
+      sendToClientId(clientId, { type: "pong" });
+      break;
+
+    case "start_game":
+      gameLogic.startGame(clientId, msg.roomId);
+      break;
+
+    case "throw_dart":
+      gameLogic.handleThrow(clientId, msg.roomId, msg.value, msg.mult);
+      break;
+
+    default:
+      console.log("⚠️ Unbekannter Typ vom Client:", msg.type);
+      break;
+  }
+}
+
+export function broadcast(data) {
+  const json = JSON.stringify(data);
+  wss.clients.forEach((c) => {
+    if (c.readyState === WebSocket.OPEN) c.send(json);
+  });
+}
+
+export function sendToClient(ws, data) {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
+}
+
+export function sendToClientId(clientId, data) {
+  const ws = userManager.getClientSocket(clientId);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(data));
+  }
+}
