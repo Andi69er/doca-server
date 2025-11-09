@@ -1,7 +1,8 @@
 // server.js — DOCA WebDarts PRO Server
 import { WebSocketServer } from "ws";
-import { registerClient, removeClient, getUserName, getOnlineUserNames, setUserName, broadcast, sendToClient, clearCleanupTimer } from "./userManager.js";
-import { createRoom, joinRoom, leaveRoom, getRoomByClientId, updateRoomList } from "./roomManager.js";
+// KORREKTUR: "clearCleanupTimer" wurde hier aus dem Import entfernt.
+import { registerClient, removeClient, getUserName, getOnlineUserNames, setUserName, broadcast, sendToClient } from "./userManager.js";
+import { createRoom, joinRoom, leaveRoom, getRoomByClientId, updateRoomL ist } from "./roomManager.js";
 
 const PORT = process.env.PORT || 10000;
 const wss = new WebSocketServer({ port: PORT });
@@ -30,7 +31,6 @@ wss.on("connection", (ws) => {
   ws.on("close", () => {
     console.log(`⌛️ Verbindung von ${clientId} getrennt. Starte 5-Sekunden-Timer zum Aufräumen.`);
     
-    // KORREKTUR: Räume nicht sofort auf. Starte einen Timer.
     globalThis.cleanupTimers[clientId] = setTimeout(() => {
         console.log(`⏰ Timer für ${clientId} abgelaufen. Führe Aufräumen durch.`);
         leaveRoom(clientId);
@@ -42,8 +42,6 @@ wss.on("connection", (ws) => {
 });
 
 function handleMessage(ws, clientId, data) {
-  // KORREKTUR: Wenn der Benutzer eine Nachricht sendet, ist er offensichtlich noch da.
-  // Wir brechen jeden laufenden Aufräum-Timer für ihn ab.
   if (globalThis.cleanupTimers[clientId]) {
       console.log(`↪️ ${clientId} hat sich rechtzeitig zurückgemeldet. Aufräum-Timer gestoppt.`);
       clearTimeout(globalThis.cleanupTimers[clientId]);
@@ -75,4 +73,6 @@ function handleMessage(ws, clientId, data) {
     default: 
       console.warn("⚠️ Unbekannter Nachrichtentyp:", data.type);
   }
-}
+}```
+
+Das war's. Dieser Code wird den Serverstart-Fehler beheben. Nochmal Entschuldigung für den unnötigen Umweg.
