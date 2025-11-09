@@ -1,8 +1,8 @@
 // server.js — DOCA WebDarts PRO Server
 import { WebSocketServer } from "ws";
-// KORREKTUR: "clearCleanupTimer" wurde hier aus dem Import entfernt.
 import { registerClient, removeClient, getUserName, getOnlineUserNames, setUserName, broadcast, sendToClient } from "./userManager.js";
-import { createRoom, joinRoom, leaveRoom, getRoomByClientId, updateRoomL ist } from "./roomManager.js";
+// KORREKTUR: Der Tippfehler "updateRoomL ist" wurde zu "updateRoomList" korrigiert.
+import { createRoom, joinRoom, leaveRoom, getRoomByClientId, updateRoomList } from "./roomManager.js";
 
 const PORT = process.env.PORT || 10000;
 const wss = new WebSocketServer({ port: PORT });
@@ -73,6 +73,4 @@ function handleMessage(ws, clientId, data) {
     default: 
       console.warn("⚠️ Unbekannter Nachrichtentyp:", data.type);
   }
-}```
-
-Das war's. Dieser Code wird den Serverstart-Fehler beheben. Nochmal Entschuldigung für den unnötigen Umweg.
+}
