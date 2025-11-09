@@ -1,7 +1,8 @@
 // server.js — DOCA WebDarts PRO Server
 import { WebSocketServer } from "ws";
 import { registerClient, removeClient, getUserName, getOnlineUserNames, setUserName, broadcast, sendToClient, broadcastToPlayers, findClientIdByName } from "./userManager.js";
-import { createRoom, joinRoom, leaveRoom, getRoomByClientId, updateRoomList, getRoomState } from "./roomManager.js";
+// KORREKTUR: Der fehlerhafte Import von 'getRoomState' wurde entfernt.
+import { createRoom, joinRoom, leaveRoom, getRoomByClientId, updateRoomList } from "./roomManager.js";
 import { Game } from "./gameLogic.js";
 
 const PORT = process.env.PORT || 10000;
@@ -41,15 +42,12 @@ wss.on("connection", (ws) => {
 });
 
 function handleMessage(ws, clientId, data) {
-  if (data.type === "auth" && data.user) {
-      const username = data.user;
-      if (globalThis.cleanupTimers[username]) {
-          clearTimeout(globalThis.cleanupTimers[username]);
-          delete globalThis.cleanupTimers[username];
-      }
-  }
-  
   if (data.type === 'auth') {
+    const username = data.user;
+    if (globalThis.cleanupTimers[username]) {
+        clearTimeout(globalThis.cleanupTimers[username]);
+        delete globalThis.cleanupTimers[username];
+    }
     setUserName(clientId, data.user);
     ws.send(JSON.stringify({ type: "connected", clientId, name: data.user }));
     broadcast({ type: "online_list", users: getOnlineUserNames() });
@@ -61,17 +59,7 @@ function handleMessage(ws, clientId, data) {
 
   switch (data.type) {
     case "create_room": createRoom(clientId, data.name, data); break;
-    case "join_room": 
-        joinRoom(clientId, data.roomId);
-        const joinedRoom = getRoomByClientId(clientId);
-        if (joinedRoom) {
-            if (joinedRoom.game) {
-                broadcastToPlayers(joinedRoom.players, getEnrichedGameState(joinedRoom.game));
-            } else {
-                broadcastToPlayers(joinedRoom.players, getRoomState(joinedRoom.id));
-            }
-        }
-        break;
+    case "join_room": joinRoom(clientId, data.roomId); break;
     case "leave_room": leaveRoom(clientId); break;
     case "list_rooms": updateRoomList(); break;
     
