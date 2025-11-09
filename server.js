@@ -1,175 +1,137 @@
-// server.js — DOCA WebDarts PRO (komplett, stabil, synchronisiert)
-// Copy & Paste — ersetzt deine aktuelle Datei vollständig
-
+import express from "express";
+import http from "http";
 import { WebSocketServer } from "ws";
-import {
-  registerClient,
-  removeClient,
-  getUserName,
-  getOnlineUserNames,
-  setUserName,
-  broadcast,
-  sendToClient,
-  broadcastToPlayers
-} from "./userManager.js";
-import {
-  createRoom,
-  joinRoom,
-  leaveRoom,
-  getRoomByClientId,
-  updateRoomList,
-  getRoomState
-} from "./roomManager.js";
-import { Game } from "./gameLogic.js";
+import { RoomManager } from "./roomManager.js";
+import { UserManager } from "./userManager.js";
+import { GameLogic } from "./gameLogic.js";
+
+const app = express();
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server });
 
 const PORT = process.env.PORT || 10000;
-const wss = new WebSocketServer({ port: PORT });
-console.log(`🚀 DOCA WebDarts Server läuft auf Port ${PORT}`);
 
-globalThis.cleanupTimers = {};
+const roomManager = new RoomManager();
+const userManager = new UserManager();
+const gameLogic = new GameLogic(roomManager, userManager);
 
 wss.on("connection", (ws) => {
-  const clientId = registerClient(ws);
-  console.log(`+ Neuer Client verbunden: ${clientId}`);
+  console.log("✅ Neuer Client verbunden.");
 
-  ws.on("message", (msg) => {
-    let data = null;
+  ws.on("message", (message) => {
+    let data;
     try {
-      data = JSON.parse(msg);
+      data = JSON.parse(message);
     } catch (e) {
-      console.error("❌ Ungültige Nachricht:", e);
+      console.error("❌ Ungültiges JSON:", message);
       return;
     }
-    handleMessage(ws, clientId, data);
+
+    const { type, payload } = data;
+
+    switch (type) {
+      // Benutzer anmelden
+      case "login": {
+        userManager.addUser(ws, payload.username);
+        broadcastOnlineList();
+        break;
+      }
+
+      // Benutzer abmelden
+      case "logout": {
+        userManager.removeUser(ws);
+        broadcastOnlineList();
+        break;
+      }
+
+      // Raum erstellen
+      case "create_room": {
+        const room = roomManager.createRoom(payload.username, payload.mode);
+        ws.send(JSON.stringify({ type: "room_created", payload: { roomId: room.id } }));
+        break;
+      }
+
+      // Raum beitreten
+      case "join_room": {
+        const { roomId, username } = payload;
+        const room = roomManager.getRoom(roomId);
+
+        if (!room) {
+          ws.send(JSON.stringify({ type: "error", payload: { message: "Raum nicht gefunden." } }));
+          return;
+        }
+
+        roomManager.addPlayerToRoom(roomId, ws, username);
+
+        // → Jetzt beide Clients synchronisieren
+        const players = roomManager.getPlayersInRoom(roomId).map(p => p.username);
+
+        roomManager.broadcastToRoom(roomId, {
+          type: "room_update",
+          payload: {
+            roomId,
+            players,
+            status: "waiting"
+          }
+        });
+
+        console.log(`👥 Spieler ${username} ist Raum ${roomId} beigetreten.`);
+        break;
+      }
+
+      // Chatnachricht
+      case "chat_message": {
+        const { roomId, username, message: msg } = payload;
+        roomManager.broadcastToRoom(roomId, {
+          type: "chat_message",
+          payload: { username, message: msg }
+        });
+        break;
+      }
+
+      // Spiel starten
+      case "start_game": {
+        const { roomId } = payload;
+        const room = roomManager.getRoom(roomId);
+        if (room) {
+          room.gameActive = true;
+          roomManager.broadcastToRoom(roomId, {
+            type: "game_started",
+            payload: { roomId }
+          });
+        }
+        break;
+      }
+
+      // Punkte eingeben
+      case "score_input": {
+        gameLogic.handleScoreInput(payload);
+        break;
+      }
+
+      default:
+        console.warn("⚠️ Unbekannter Nachrichtentyp:", type);
+        break;
+    }
   });
 
   ws.on("close", () => {
-    console.log(`- Verbindung getrennt: ${clientId}`);
-    if (globalThis.cleanupTimers[clientId])
-      clearTimeout(globalThis.cleanupTimers[clientId]);
-    globalThis.cleanupTimers[clientId] = setTimeout(() => {
-      try {
-        leaveRoom(clientId);
-        removeClient(clientId);
-        broadcast({ type: "online_list", users: getOnlineUserNames() });
-        updateRoomList();
-      } catch (e) {
-        console.error("Cleanup Error:", e);
-      } finally {
-        if (globalThis.cleanupTimers[clientId]) {
-          clearTimeout(globalThis.cleanupTimers[clientId]);
-          delete globalThis.cleanupTimers[clientId];
-        }
-      }
-    }, 3000);
+    const username = userManager.getUsernameBySocket(ws);
+    userManager.removeUser(ws);
+    roomManager.removePlayerFromAllRooms(ws);
+    broadcastOnlineList();
+    console.log(`❌ ${username || "Unbekannter Benutzer"} getrennt.`);
   });
 });
 
-function getEnrichedGameState(game) {
-  const state = game.getState();
-  state.playerNames = state.players.map((pid) => getUserName(pid));
-  return state;
+function broadcastOnlineList() {
+  const online = userManager.getAllUsernames();
+  const msg = JSON.stringify({ type: "online_list", payload: online });
+  wss.clients.forEach(client => {
+    if (client.readyState === 1) client.send(msg);
+  });
 }
 
-function handleMessage(ws, clientId, data) {
-  if (!data || !data.type) return;
-  const type = data.type.toLowerCase();
-
-  switch (type) {
-    // === Authentifizierung / Online ===
-    case "auth": {
-      const username = data.user || `Gast-${clientId}`;
-      if (globalThis.cleanupTimers[clientId]) {
-        clearTimeout(globalThis.cleanupTimers[clientId]);
-        delete globalThis.cleanupTimers[clientId];
-      }
-      setUserName(clientId, username);
-      sendToClient(clientId, { type: "connected", clientId, name: username });
-      broadcast({ type: "online_list", users: getOnlineUserNames() });
-      updateRoomList();
-      break;
-    }
-
-    case "list_online": {
-      sendToClient(clientId, { type: "online_list", users: getOnlineUserNames() });
-      break;
-    }
-
-    // === Räume ===
-    case "create_room": {
-      const roomId = createRoom(clientId, data.name, data);
-      const room = getRoomByClientId(clientId);
-      if (room) broadcastToPlayers(room.players, getRoomState(room.id));
-      updateRoomList();
-      break;
-    }
-
-    case "join_room": {
-      joinRoom(clientId, data.roomId);
-      const room = getRoomByClientId(clientId);
-      if (room) {
-        // → neu hinzugefügt: sofortige Synchronisierung für alle Spieler im Raum
-        const state = getRoomState(room.id);
-        broadcastToPlayers(room.players, state);
-        updateRoomList();
-      }
-      break;
-    }
-
-    case "leave_room": {
-      leaveRoom(clientId);
-      updateRoomList();
-      break;
-    }
-
-    case "list_rooms": {
-      updateRoomList();
-      break;
-    }
-
-    // === Spielsteuerung ===
-    case "start_game": {
-      const room = getRoomByClientId(clientId);
-      if (room && room.ownerId === clientId && room.players.length >= 1) {
-        room.game = new Game(room.players, room.options);
-        room.game.start();
-        broadcastToPlayers(room.players, getEnrichedGameState(room.game));
-      }
-      break;
-    }
-
-    case "player_throw": {
-      const room = getRoomByClientId(clientId);
-      if (room && room.game) {
-        room.game.playerThrow(clientId, data.value, data.mult);
-        broadcastToPlayers(room.players, getEnrichedGameState(room.game));
-      }
-      break;
-    }
-
-    case "undo_throw": {
-      const room = getRoomByClientId(clientId);
-      if (room && room.game) {
-        room.game.undoLastThrow(clientId);
-        broadcastToPlayers(room.players, getEnrichedGameState(room.game));
-      }
-      break;
-    }
-
-    // === Chat ===
-    case "chat_global": {
-      const msg = {
-        type: "chat_global",
-        user: getUserName(clientId),
-        message: data.message || "",
-        time: Date.now(),
-      };
-      broadcast(msg);
-      break;
-    }
-
-    default: {
-      console.warn("⚠️ Unbekannter Nachrichtentyp:", data.type);
-    }
-  }
-}
+server.listen(PORT, () => {
+  console.log(`🚀 DOCA WebDarts Server läuft auf Port ${PORT}`);
+});
