@@ -5,8 +5,8 @@ import {
   registerClient,
   removeClient,
   getUserName,
-  getOnlineUserNames, // Importieren von userManager
-  setUserName,      // Die neue Funktion importieren
+  getOnlineUserNames,
+  setUserName,
   broadcast,
   sendToClient,
 } from "./userManager.js";
@@ -14,10 +14,7 @@ import {
   createRoom,
   joinRoom,
   leaveRoom,
-  getRooms,
-  removeEmptyRooms,
-  getRoomById,
-  getRoomByClientId,
+  getRoomByClientId, // Wichtig: Importieren
   updateRoomList,
 } from "./roomManager.js";
 
@@ -31,8 +28,8 @@ wss.on("connection", (ws) => {
   console.log(`✅ Benutzer verbunden: ${clientId}`);
 
   ws.send(JSON.stringify({ type: "connected", clientId, name: getUserName(clientId) }));
-  // Send the current list immediately, guest name will be updated shortly
   broadcast({ type: "online_list", users: getOnlineUserNames() });
+  updateRoomList();
 
   ws.on("message", (msg) => {
     try {
@@ -47,21 +44,20 @@ wss.on("connection", (ws) => {
     console.log(`❌ Benutzer getrennt: ${clientId}`);
     leaveRoom(clientId);
     removeClient(clientId);
-    removeEmptyRooms();
     broadcast({ type: "online_list", users: getOnlineUserNames() });
   });
 });
 
 function handleMessage(ws, clientId, data) {
   switch (data.type) {
-    // --- NEUER FALL HINZUGEFÜGT ---
     case "auth":
       setUserName(clientId, data.user);
       break;
-
     case "ping":
       sendToClient(clientId, { type: "pong", message: "pong" });
       break;
+    // --- KORREKTUR: "chat" wird jetzt verstanden ---
+    case "chat":
     case "chat_message":
     case "chat_global":
       broadcast({ type: "chat_global", user: getUserName(clientId), message: data.message });
@@ -87,7 +83,11 @@ function handleMessage(ws, clientId, data) {
     case "bull_shot":
     case "undo_throw":
     case "player_throw":
-      handleClientMessage(clientId, data);
+      // --- KORREKTUR: Spiel-Nachrichten direkt an den Raum leiten ---
+      const room = getRoomByClientId(clientId);
+      if (room) {
+        handleClientMessage(clientId, data, room);
+      }
       break;
     default:
       console.warn("⚠️ Unbekannter Nachrichtentyp:", data.type);
