@@ -3,7 +3,7 @@ import { broadcast, sendToClient, getUserName, broadcastToPlayers } from "./user
 
 globalThis.rooms = {};
 
-// Interne Funktion, um alle Spieler im Raum über den aktuellen Stand zu informieren
+// Diese Funktion existiert bereits, wird jetzt aber exportiert
 function broadcastRoomState(roomId) {
     const room = globalThis.rooms[roomId];
     if (!room) return;
@@ -37,7 +37,6 @@ function joinRoom(clientId, roomId) {
     return;
   }
   
-  // Verlasse den alten Raum, falls vorhanden
   leaveRoom(clientId, false); 
   
   if (room.players.length < room.maxPlayers && !room.players.includes(clientId)) {
@@ -46,13 +45,13 @@ function joinRoom(clientId, roomId) {
     sendToClient(clientId, { type: "joined_room", roomId: roomId });
   }
   
-  updateRoomList(); // Lobby aktualisieren
-  broadcastRoomState(roomId); // Spiel-Seite aktualisieren
+  updateRoomList();
+  broadcastRoomState(roomId);
 }
 
 function leaveRoom(clientId, doUpdate = true) {
   const rid = globalThis.userRooms[clientId];
-  if (!rid || !globalThis.rooms[rid]) return; // Wichtig: Bricht ab, wenn der User in keinem Raum ist
+  if (!rid || !globalThis.rooms[rid]) return;
   
   const room = globalThis.rooms[rid];
   room.players = room.players.filter((p) => p !== clientId);
@@ -63,7 +62,7 @@ function leaveRoom(clientId, doUpdate = true) {
     delete globalThis.rooms[rid];
   } else {
     if (room.ownerId === clientId) { room.ownerId = room.players[0]; }
-    broadcastRoomState(rid); // Verbleibende Spieler informieren
+    broadcastRoomState(rid);
   }
   
   if (doUpdate) {
@@ -86,4 +85,6 @@ function updateRoomList() {
   broadcast({ type: "room_update", rooms: list });
 }
 
-export { createRoom, joinRoom, leaveRoom, getRoomByClientId, updateRoomList };
+// --- HIER IST DIE KORREKTUR ---
+// broadcastRoomState wird jetzt zur Liste der exportierten Funktionen hinzugefügt.
+export { createRoom, joinRoom, leaveRoom, getRoomByClientId, updateRoomList, broadcastRoomState };
