@@ -12,19 +12,18 @@ console.log(`🚀 DOCA WebDarts Server läuft auf Port ${PORT}`);
 wss.on("connection", (ws) => {
   const clientId = Math.random().toString(36).substr(2, 6);
   userManager.addClient(clientId, ws);
-
   console.log(`✅ Benutzer verbunden: ${clientId}`);
+
   sendToClient(ws, { type: "connected", clientId });
 
-  ws.on("message", (msgRaw) => {
+  ws.on("message", (raw) => {
     let msg;
     try {
-      msg = JSON.parse(msgRaw);
-    } catch (e) {
-      console.error("❌ Ungültige Nachricht", msgRaw);
+      msg = JSON.parse(raw);
+    } catch {
+      console.error("❌ Ungültige Nachricht", raw);
       return;
     }
-
     handleMessage(clientId, msg);
   });
 
@@ -76,6 +75,7 @@ function handleMessage(clientId, msg) {
   }
 }
 
+// Hilfsfunktionen
 export function broadcast(data) {
   const json = JSON.stringify(data);
   wss.clients.forEach((c) => {

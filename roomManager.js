@@ -6,11 +6,9 @@ class RoomManager {
     this.rooms = new Map();
   }
 
-  /**
-   * Raum erstellen
-   */
+  // Raum erstellen
   createRoom(clientId, name = "Neuer Raum", options = {}) {
-    const id = "r" + Math.random().toString(36).substr(2, 6);
+    const id = Math.random().toString(36).substr(2, 6);
     const creatorName = getUserName(clientId) || "Gast";
 
     const roomData = {
@@ -18,13 +16,13 @@ class RoomManager {
       name,
       players: [clientId],
       maxPlayers: 2,
+      creatorName,
       options: {
         startingScore: Number(options.startingScore) || 501,
-        finishType: options.finishType || "double_out",
+        finishType: options.finishType || "Double Out",
         doubleIn: !!options.doubleIn,
-        startChoice: options.startChoice || "first",
+        startChoice: options.startChoice || "Ich",
       },
-      creatorName,
     };
 
     this.rooms.set(id, roomData);
@@ -33,9 +31,7 @@ class RoomManager {
     return id;
   }
 
-  /**
-   * Raum beitreten
-   */
+  // Raum beitreten
   joinRoom(clientId, roomId) {
     const room = this.rooms.get(roomId);
     if (!room) return;
@@ -46,9 +42,7 @@ class RoomManager {
     this.updateRooms();
   }
 
-  /**
-   * Raum verlassen
-   */
+  // Raum verlassen
   leaveRoom(clientId) {
     for (const [id, room] of this.rooms.entries()) {
       if (room.players.includes(clientId)) {
@@ -62,19 +56,17 @@ class RoomManager {
     }
   }
 
-  /**
-   * Räume an alle Clients senden
-   */
+  // Räume an alle Clients senden
   updateRooms() {
-    const list = [...this.rooms.values()].map((r) => ({
+    const roomList = [...this.rooms.values()].map((r) => ({
       id: r.id,
       name: r.name,
+      creatorName: r.creatorName,
       players: r.players,
       maxPlayers: r.maxPlayers,
-      creatorName: r.creatorName,
       options: r.options,
     }));
-    broadcast({ type: "room_update", rooms: list });
+    broadcast({ type: "room_update", rooms: roomList });
   }
 }
 
