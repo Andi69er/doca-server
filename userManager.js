@@ -1,7 +1,4 @@
 // userManager.js — DOCA WebDarts PRO
-// --- KORREKTUR: Importe von roomManager und gameLogic entfernt ---
-// Das verhindert eine zirkuläre Abhängigkeit, die den Fehler verursacht.
-
 globalThis.clients = {};
 globalThis.userNames = {};
 globalThis.userRooms = {};
@@ -42,6 +39,17 @@ function broadcast(obj) {
   }
 }
 
+// NEUE FUNKTION: Sendet eine Nachricht nur an bestimmte Spieler
+export function broadcastToPlayers(playerIds, obj) {
+    const msg = JSON.stringify(obj);
+    playerIds.forEach(id => {
+        const ws = globalThis.clients[id];
+        if (ws && ws.readyState === ws.OPEN) {
+            ws.send(msg);
+        }
+    });
+}
+
 function broadcastOnlineList() {
     broadcast({ type: "online_list", users: getOnlineUserNames() });
 }
@@ -51,18 +59,6 @@ function sendToClient(clientId, obj) {
   if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
 }
 
-// --- KORREKTUR: Funktion akzeptiert jetzt den Raum als Parameter ---
-function handleClientMessage(clientId, data, room) {
-  // Die Logik hier wird erst relevant, wenn das Spiel läuft.
-  // Fürs Erste leiten wir es einfach weiter.
-  if (room && room.game) {
-    // Hier würde die Spiellogik aufgerufen
-    console.log(`Spiel-Aktion ${data.type} für Raum ${room.id} erhalten.`);
-  } else if (room) {
-      console.log(`Spiel-Aktion ${data.type}, aber kein Spiel aktiv in Raum ${room.id}.`);
-  }
-}
-
 export {
   registerClient,
   removeClient,
@@ -70,6 +66,5 @@ export {
   getOnlineUserNames,
   broadcast,
   sendToClient,
-  handleClientMessage,
   setUserName,
 };
