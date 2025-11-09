@@ -1,9 +1,9 @@
 import express from "express";
 import http from "http";
 import { WebSocketServer } from "ws";
-import { RoomManager } from "./roomManager.js";
-import { UserManager } from "./userManager.js";
-import { GameLogic } from "./gameLogic.js";
+import RoomManager from "./roomManager.js";
+import UserManager from "./userManager.js";
+import GameLogic from "./gameLogic.js"; // <== Default-Import, kein { }
 
 const app = express();
 const server = http.createServer(app);
@@ -63,7 +63,7 @@ wss.on("connection", (ws) => {
 
         roomManager.addPlayerToRoom(roomId, ws, username);
 
-        // → Jetzt beide Clients synchronisieren
+        // Jetzt beide Clients synchronisieren
         const players = roomManager.getPlayersInRoom(roomId).map(p => p.username);
 
         roomManager.broadcastToRoom(roomId, {
