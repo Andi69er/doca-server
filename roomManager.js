@@ -12,23 +12,21 @@ class RoomManager {
   createRoom(clientId, name = "Neuer Raum", options = {}) {
     const id = "r" + Math.random().toString(36).substr(2, 6);
 
-    // Spielername des Erstellers speichern
-    const creatorName = options.creator || options.username || clientId;
-
-    // Spielinfos (Distanz / Finish / Variante)
     const roomData = {
       id,
       name,
-      creator: creatorName,
-      distance: options.distance || options.startingScore || "501",
-      finish: options.finish || options.finishType || "Do",
-      variant: options.variant || "",
+      createdBy: options.createdBy || clientId,
+      distance: options.distance || "501",
+      mode: options.mode || "Standard",
+      finishType: options.finishType || "Double Out",
+      doubleIn: !!options.doubleIn,
       players: [clientId],
-      maxPlayers: 2
+      maxPlayers: 2,
     };
 
     this.rooms.set(id, roomData);
-    console.log(`🎯 Raum erstellt: ${name} (${id}) von ${creatorName}`);
+    console.log(`🎯 Raum erstellt: ${roomData.name} (${id}) von ${roomData.createdBy}`);
+
     this.updateRooms();
     return id;
   }
@@ -39,7 +37,7 @@ class RoomManager {
   updateRooms() {
     broadcast({
       type: "room_update",
-      rooms: Array.from(this.rooms.values())
+      rooms: Array.from(this.rooms.values()),
     });
   }
 
@@ -49,20 +47,27 @@ class RoomManager {
   handleMessage(ws, data, clientId) {
     switch (data.type) {
       case "create_room":
-        const roomId = this.createRoom(clientId, data.name, data);
+        // erwartet: { type:"create_room", name:"xyz", options:{...} }
+        const roomId = this.createRoom(clientId, data.name, data.options || {});
         sendToClient(clientId, { type: "joined_room", roomId });
         break;
 
       case "list_rooms":
         sendToClient(clientId, {
           type: "room_update",
-          rooms: Array.from(this.rooms.values())
+          rooms: Array.from(this.rooms.values()),
         });
         break;
 
+      case "list_online":
+        // ignorieren – kein Logspam
+        break;
+
       default:
-        // Nur Debug auf Server, nicht an Client
-        console.log(`⚠️ Unbekannter Typ vom Client: ${data.type}`);
+        // nur bei echten Fehlern warnen
+        if (data.type && !["ping", "pong", "auth"].includes(data.type)) {
+          console.warn(`⚠️ Unbekannter Typ vom Client: ${data.type}`);
+        }
         break;
     }
   }

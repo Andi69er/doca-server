@@ -1,47 +1,30 @@
 // userManager.js
 const users = new Map();
 
-/**
- * Benutzer hinzufügen
- */
 export function addUser(id, ws) {
   users.set(id, ws);
-  console.log(`✅ Benutzer verbunden: ${id}`);
 }
 
-/**
- * Benutzer entfernen
- */
 export function removeUser(id) {
   users.delete(id);
-  console.log(`❌ Benutzer getrennt: ${id}`);
 }
 
-/**
- * Nachricht an spezifischen Client
- */
-export function sendToClient(id, message) {
+export function sendToClient(id, data) {
   const ws = users.get(id);
-  if (ws && ws.readyState === ws.OPEN) {
-    ws.send(JSON.stringify(message));
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(data));
+}
+
+export function broadcast(data) {
+  const msg = JSON.stringify(data);
+  for (const ws of users.values()) {
+    if (ws.readyState === 1) ws.send(msg);
   }
 }
 
-/**
- * Nachricht an alle Clients (optional mit Ausschluss)
- */
-export function broadcast(message, exceptId = null) {
-  const data = JSON.stringify(message);
-  for (const [id, ws] of users) {
-    if (ws.readyState === ws.OPEN && id !== exceptId) {
-      ws.send(data);
-    }
+export function getOnlineList() {
+  const result = [];
+  for (const [id, ws] of users.entries()) {
+    result.push(ws.username || id);
   }
-}
-
-/**
- * Liste aller verbundenen Benutzer
- */
-export function getAllUsers() {
-  return Array.from(users.keys());
+  return result;
 }
