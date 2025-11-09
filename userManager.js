@@ -1,30 +1,63 @@
 // userManager.js
-const users = new Map();
 
-export function addUser(id, ws) {
-  users.set(id, ws);
+export class UserManager {
+  constructor() {
+    this.clients = new Map(); // clientId → WebSocket
+    this.names = new Map();   // clientId → username
+  }
+
+  addClient(clientId, ws) {
+    this.clients.set(clientId, ws);
+  }
+
+  removeClient(clientId) {
+    this.clients.delete(clientId);
+    this.names.delete(clientId);
+  }
+
+  setUserName(clientId, name) {
+    this.names.set(clientId, name);
+  }
+
+  getUserName(clientId) {
+    return this.names.get(clientId) || "Gast";
+  }
+
+  getClientSocket(clientId) {
+    return this.clients.get(clientId);
+  }
+
+  getOnlineUsers() {
+    return [...this.names.values()];
+  }
 }
 
-export function removeUser(id) {
-  users.delete(id);
-}
+export const userManager = new UserManager();
 
-export function sendToClient(id, data) {
-  const ws = users.get(id);
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify(data));
-}
-
+/**
+ * Globale Hilfsfunktionen (von roomManager.js oder server.js nutzbar)
+ */
 export function broadcast(data) {
-  const msg = JSON.stringify(data);
-  for (const ws of users.values()) {
-    if (ws.readyState === 1) ws.send(msg);
+  const json = JSON.stringify(data);
+  for (const ws of userManager.clients.values()) {
+    if (ws.readyState === 1) ws.send(json);
   }
 }
 
-export function getOnlineList() {
-  const result = [];
-  for (const [id, ws] of users.entries()) {
-    result.push(ws.username || id);
+export function sendToClient(ws, data) {
+  if (ws && ws.readyState === 1) {
+    ws.send(JSON.stringify(data));
   }
-  return result;
+}
+
+export function sendToClientId(clientId, data) {
+  const ws = userManager.getClientSocket(clientId);
+  if (ws && ws.readyState === 1) {
+    ws.send(JSON.stringify(data));
+  }
+}
+
+// Exportiere getUserName einzeln (damit roomManager es verwenden kann)
+export function getUserName(clientId) {
+  return userManager.getUserName(clientId);
 }
