@@ -30,7 +30,7 @@ wss.on("connection", (ws) => {
 
   ws.send(JSON.stringify({ type: "connected", clientId, name: getUserName(clientId) }));
   broadcast({ type: "online_list", users: getOnlineUserNames() });
-  updateRoomList(); // Send current room list to the new user
+  updateRoomList();
 
   ws.on("message", (msg) => {
     try {
@@ -43,7 +43,7 @@ wss.on("connection", (ws) => {
 
   ws.on("close", () => {
     console.log(`❌ Benutzer getrennt: ${clientId}`);
-    leaveRoom(clientId); // Make sure user leaves any room
+    leaveRoom(clientId);
     removeClient(clientId);
     removeEmptyRooms();
     broadcast({ type: "online_list", users: getOnlineUserNames() });
@@ -56,11 +56,10 @@ function handleMessage(ws, clientId, data) {
       sendToClient(clientId, { type: "pong", message: "pong" });
       break;
     case "chat_message":
-    case "chat_global": // Handling both chat types
+    case "chat_global":
       broadcast({ type: "chat_global", user: getUserName(clientId), message: data.message });
       break;
     case "create_room":
-      // FIX: Pass the entire data object as options, not data.options
       createRoom(clientId, data.name, data);
       break;
     case "join_room":
@@ -70,7 +69,7 @@ function handleMessage(ws, clientId, data) {
       leaveRoom(clientId);
       break;
     case "list_online":
-    case "request_online": // Handling both types
+    case "request_online":
       sendToClient(clientId, { type: "online_list", users: getOnlineUserNames() });
       break;
     case "list_rooms":
@@ -80,7 +79,7 @@ function handleMessage(ws, clientId, data) {
     case "throw_dart":
     case "bull_shot":
     case "undo_throw":
-    case "player_throw": // Handling game actions
+    case "player_throw":
       handleClientMessage(clientId, data);
       break;
     default:
