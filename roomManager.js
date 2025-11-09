@@ -3,19 +3,15 @@ import { broadcast, sendToClient, getUserName, broadcastToPlayers } from "./user
 
 globalThis.rooms = {};
 
-// Interne Funktion, die den Zustand des Raums an die Spieler sendet
-function broadcastRoomUpdate(roomId) {
+// Diese Funktion erstellt einen sauberen "Pre-Game"-Zustand
+export function getRoomState(roomId) {
     const room = globalThis.rooms[roomId];
-    if (!room) return;
-
-    const playerNames = room.players.map(pid => getUserName(pid));
-
-    // Erstellt eine "game_state" Nachricht, auch wenn das Spiel noch nicht läuft
-    const preGameState = {
+    if (!room) return null;
+    return {
         type: "game_state",
         isStarted: false,
         players: room.players,
-        playerNames: playerNames,
+        playerNames: room.players.map(pid => getUserName(pid)),
         scores: room.players.reduce((acc, pid) => {
             acc[pid] = parseInt(room.options.distance) || 501;
             return acc;
@@ -27,10 +23,6 @@ function broadcastRoomUpdate(roomId) {
         isFull: room.players.length === room.maxPlayers,
         ownerId: room.ownerId
     };
-    
-    if (room.players.length > 0) {
-        broadcastToPlayers(room.players, preGameState);
-    }
 }
 
 export function createRoom(clientId, name = "Neuer Raum", options = {}) {
@@ -51,8 +43,7 @@ export function joinRoom(clientId, roomId) {
     globalThis.userRooms[clientId] = roomId;
   }
   
-  updateRoomList(); // Lobby aktualisieren
-  broadcastRoomUpdate(roomId); // Spielraum zuverlässig aktualisieren
+  updateRoomList();
 }
 
 export function leaveRoom(clientId, doUpdate = true) {
@@ -67,7 +58,7 @@ export function leaveRoom(clientId, doUpdate = true) {
     delete globalThis.rooms[rid];
   } else {
     if (room.ownerId === clientId) { room.ownerId = room.players[0]; }
-    broadcastRoomUpdate(rid); // Verbleibende Spieler informieren
+    broadcastToPlayers(room.players, getRoomState(rid)); // Verbleibende Spieler informieren
   }
   
   if (doUpdate) {

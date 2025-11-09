@@ -1,8 +1,7 @@
 // server.js — DOCA WebDarts PRO Server
 import { WebSocketServer } from "ws";
 import { registerClient, removeClient, getUserName, getOnlineUserNames, setUserName, broadcast, sendToClient, broadcastToPlayers, findClientIdByName } from "./userManager.js";
-// KORREKTUR: Der fehlerhafte Import von 'getRoomState' wurde entfernt.
-import { createRoom, joinRoom, leaveRoom, getRoomByClientId, updateRoomList } from "./roomManager.js";
+import { createRoom, joinRoom, leaveRoom, getRoomByClientId, updateRoomList, getRoomState } from "./roomManager.js";
 import { Game } from "./gameLogic.js";
 
 const PORT = process.env.PORT || 10000;
@@ -59,7 +58,14 @@ function handleMessage(ws, clientId, data) {
 
   switch (data.type) {
     case "create_room": createRoom(clientId, data.name, data); break;
-    case "join_room": joinRoom(clientId, data.roomId); break;
+    case "join_room": 
+        joinRoom(clientId, data.roomId);
+        const joinedRoom = getRoomByClientId(clientId);
+        if (joinedRoom) {
+            // Sende IMMER den kompletten Raum-Zustand an alle im Raum
+            broadcastToPlayers(joinedRoom.players, getRoomState(joinedRoom.id));
+        }
+        break;
     case "leave_room": leaveRoom(clientId); break;
     case "list_rooms": updateRoomList(); break;
     
