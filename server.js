@@ -1,8 +1,23 @@
-// server.js
-import WebSocket, { WebSocketServer } from "ws";
-import { roomManager } from "./roomManager.js";
-import { userManager, getUserName } from "./userManager.js";
-import { gameLogic } from "./gameLogic.js";
+// server.js — DOCA WebDarts PRO Server
+import { WebSocketServer } from "ws";
+import {
+  handleClientMessage,
+  registerClient,
+  removeClient,
+  getUserName,
+  broadcast,
+  sendToClient,
+} from "./userManager.js";
+import {
+  createRoom,
+  joinRoom,
+  leaveRoom,
+  getRooms,
+  removeEmptyRooms,
+  getRoomById,
+  getRoomByClientId,
+  updateRoomList,
+} from "./roomManager.js";
 
 const PORT = process.env.PORT || 10000;
 const wss = new WebSocketServer({ port: PORT });
@@ -10,86 +25,60 @@ const wss = new WebSocketServer({ port: PORT });
 console.log(`🚀 DOCA WebDarts Server läuft auf Port ${PORT}`);
 
 wss.on("connection", (ws) => {
-  const clientId = Math.random().toString(36).substr(2, 6);
-  userManager.addClient(clientId, ws);
+  const clientId = registerClient(ws);
   console.log(`✅ Benutzer verbunden: ${clientId}`);
 
-  sendToClient(ws, { type: "connected", clientId });
+  ws.send(JSON.stringify({ type: "connected", clientId, name: getUserName(clientId) }));
+  broadcast({ type: "online_list", users: getOnlineUserNames() });
 
-  ws.on("message", (raw) => {
-    let msg;
+  ws.on("message", (msg) => {
     try {
-      msg = JSON.parse(raw);
-    } catch {
-      console.error("❌ Ungültige Nachricht", raw);
-      return;
+      const data = JSON.parse(msg);
+      handleMessage(ws, clientId, data);
+    } catch (e) {
+      console.error("❌ Ungültige Nachricht:", e);
     }
-    handleMessage(clientId, msg);
   });
 
   ws.on("close", () => {
     console.log(`❌ Benutzer getrennt: ${clientId}`);
-    roomManager.leaveRoom(clientId);
-    userManager.removeClient(clientId);
+    removeClient(clientId);
+    removeEmptyRooms();
+    broadcast({ type: "online_list", users: getOnlineUserNames() });
   });
 });
 
-function handleMessage(clientId, msg) {
-  switch (msg.type) {
-    case "auth":
-      userManager.setUserName(clientId, msg.name);
-      console.log(`👤 Authentifiziert: ${msg.name} (${clientId})`);
-      break;
-
-    case "create_room":
-      roomManager.createRoom(clientId, msg.name, msg.options || {});
-      break;
-
-    case "join_room":
-      roomManager.joinRoom(clientId, msg.roomId);
-      break;
-
-    case "leave_room":
-      roomManager.leaveRoom(clientId);
-      break;
-
-    case "list_rooms":
-      roomManager.updateRooms();
-      break;
-
+function handleMessage(ws, clientId, data) {
+  switch (data.type) {
     case "ping":
-      sendToClientId(clientId, { type: "pong" });
+      sendToClient(clientId, { type: "pong", message: "pong" });
       break;
-
+    case "chat_message":
+      broadcast({ type: "chat_message", from: getUserName(clientId), message: data.message });
+      break;
+    case "create_room":
+      createRoom(clientId, data.name, data.options);
+      break;
+    case "join_room":
+      joinRoom(clientId, data.roomId);
+      break;
+    case "leave_room":
+      leaveRoom(clientId);
+      break;
+    case "list_online":
+      sendToClient(clientId, { type: "online_list", users: getOnlineUserNames() });
+      break;
     case "start_game":
-      gameLogic.startGame(clientId, msg.roomId);
-      break;
-
     case "throw_dart":
-      gameLogic.handleThrow(clientId, msg.roomId, msg.value, msg.mult);
+    case "bull_shot":
+    case "undo_throw":
+      handleClientMessage(clientId, data);
       break;
-
     default:
-      console.log("⚠️ Unbekannter Typ vom Client:", msg.type);
-      break;
+      console.warn("⚠️ Unbekannter Nachrichtentyp:", data.type);
   }
 }
 
-// Hilfsfunktionen
-export function broadcast(data) {
-  const json = JSON.stringify(data);
-  wss.clients.forEach((c) => {
-    if (c.readyState === WebSocket.OPEN) c.send(json);
-  });
-}
-
-export function sendToClient(ws, data) {
-  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
-}
-
-export function sendToClientId(clientId, data) {
-  const ws = userManager.getClientSocket(clientId);
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(data));
-  }
+function getOnlineUserNames() {
+  return Object.values(globalThis.userNames || {});
 }

@@ -1,73 +1,81 @@
-// roomManager.js
+// roomManager.js — DOCA WebDarts PRO
 import { broadcast, sendToClient, getUserName } from "./userManager.js";
 
-class RoomManager {
-  constructor() {
-    this.rooms = new Map();
-  }
+globalThis.rooms = {};
 
-  // Raum erstellen
-  createRoom(clientId, name = "Neuer Raum", options = {}) {
-    const id = Math.random().toString(36).substr(2, 6);
-    const creatorName = getUserName(clientId) || "Gast";
+function createRoom(clientId, name = "Neuer Raum", options = {}) {
+  const id = Math.random().toString(36).substring(2, 8);
+  const room = {
+    id,
+    name,
+    ownerId: clientId,
+    players: [clientId],
+    maxPlayers: 2,
+    options,
+    game: null,
+    createdAt: Date.now(),
+  };
+  globalThis.rooms[id] = room;
+  console.log(`🎯 Raum erstellt: ${name} (${id})`);
+  updateRoomList();
+}
 
-    const roomData = {
-      id,
-      name,
-      players: [clientId],
-      maxPlayers: 2,
-      creatorName,
-      options: {
-        startingScore: Number(options.startingScore) || 501,
-        finishType: options.finishType || "Double Out",
-        doubleIn: !!options.doubleIn,
-        startChoice: options.startChoice || "Ich",
-      },
-    };
+function joinRoom(clientId, roomId) {
+  const room = globalThis.rooms[roomId];
+  if (!room) return;
+  if (!room.players.includes(clientId)) room.players.push(clientId);
+  globalThis.userRooms[clientId] = roomId;
+  updateRoomList();
+}
 
-    this.rooms.set(id, roomData);
-    console.log(`🎯 Raum erstellt: ${name} (${id}) von ${creatorName}`);
-    this.updateRooms();
-    return id;
-  }
+function leaveRoom(clientId) {
+  const rid = globalThis.userRooms[clientId];
+  if (!rid) return;
+  const room = globalThis.rooms[rid];
+  if (!room) return;
+  room.players = room.players.filter((p) => p !== clientId);
+  if (room.players.length === 0) delete globalThis.rooms[rid];
+  globalThis.userRooms[clientId] = null;
+  updateRoomList();
+}
 
-  // Raum beitreten
-  joinRoom(clientId, roomId) {
-    const room = this.rooms.get(roomId);
-    if (!room) return;
-    if (room.players.includes(clientId)) return;
-    if (room.players.length >= room.maxPlayers) return;
-
-    room.players.push(clientId);
-    this.updateRooms();
-  }
-
-  // Raum verlassen
-  leaveRoom(clientId) {
-    for (const [id, room] of this.rooms.entries()) {
-      if (room.players.includes(clientId)) {
-        room.players = room.players.filter((p) => p !== clientId);
-        if (room.players.length === 0) {
-          this.rooms.delete(id);
-        }
-        this.updateRooms();
-        break;
-      }
-    }
-  }
-
-  // Räume an alle Clients senden
-  updateRooms() {
-    const roomList = [...this.rooms.values()].map((r) => ({
-      id: r.id,
-      name: r.name,
-      creatorName: r.creatorName,
-      players: r.players,
-      maxPlayers: r.maxPlayers,
-      options: r.options,
-    }));
-    broadcast({ type: "room_update", rooms: roomList });
+function removeEmptyRooms() {
+  for (const [id, r] of Object.entries(globalThis.rooms)) {
+    if (r.players.length === 0) delete globalThis.rooms[id];
   }
 }
 
-export const roomManager = new RoomManager();
+function getRoomById(id) {
+  return globalThis.rooms[id];
+}
+
+function getRoomByClientId(cid) {
+  const rid = globalThis.userRooms[cid];
+  return rid ? globalThis.rooms[rid] : null;
+}
+
+function updateRoomList() {
+  const list = Object.values(globalThis.rooms).map((r) => ({
+    id: r.id,
+    name: r.name,
+    owner: getUserName(r.ownerId),
+    players: r.players.map((p) => getUserName(p)),
+    maxPlayers: r.maxPlayers,
+  }));
+  broadcast({ type: "room_update", rooms: list });
+}
+
+function getRooms() {
+  return Object.values(globalThis.rooms);
+}
+
+export {
+  createRoom,
+  joinRoom,
+  leaveRoom,
+  getRooms,
+  removeEmptyRooms,
+  getRoomById,
+  getRoomByClientId,
+  updateRoomList,
+};

@@ -2,11 +2,12 @@
   "name": "doca-server",
   "version": "1.0.0",
   "type": "module",
+  "description": "DOCA WebDarts PRO Server",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "ws": "^8.17.0"
+    "ws": "^8.17.1"
   }
 }
