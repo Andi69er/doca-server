@@ -3,7 +3,8 @@ import http from "http";
 import { WebSocketServer } from "ws";
 import RoomManager from "./roomManager.js";
 import UserManager from "./userManager.js";
-import GameLogic from "./gameLogic.js"; // <== Default-Import, kein { }
+import pkg from "./gameLogic.js"; // akzeptiert CJS oder ESM
+const GameLogic = pkg.GameLogic || pkg; // <-- funktioniert in beiden Fällen
 
 const app = express();
 const server = http.createServer(app);
@@ -30,28 +31,24 @@ wss.on("connection", (ws) => {
     const { type, payload } = data;
 
     switch (type) {
-      // Benutzer anmelden
       case "login": {
         userManager.addUser(ws, payload.username);
         broadcastOnlineList();
         break;
       }
 
-      // Benutzer abmelden
       case "logout": {
         userManager.removeUser(ws);
         broadcastOnlineList();
         break;
       }
 
-      // Raum erstellen
       case "create_room": {
         const room = roomManager.createRoom(payload.username, payload.mode);
         ws.send(JSON.stringify({ type: "room_created", payload: { roomId: room.id } }));
         break;
       }
 
-      // Raum beitreten
       case "join_room": {
         const { roomId, username } = payload;
         const room = roomManager.getRoom(roomId);
@@ -63,7 +60,6 @@ wss.on("connection", (ws) => {
 
         roomManager.addPlayerToRoom(roomId, ws, username);
 
-        // Jetzt beide Clients synchronisieren
         const players = roomManager.getPlayersInRoom(roomId).map(p => p.username);
 
         roomManager.broadcastToRoom(roomId, {
@@ -79,7 +75,6 @@ wss.on("connection", (ws) => {
         break;
       }
 
-      // Chatnachricht
       case "chat_message": {
         const { roomId, username, message: msg } = payload;
         roomManager.broadcastToRoom(roomId, {
@@ -89,7 +84,6 @@ wss.on("connection", (ws) => {
         break;
       }
 
-      // Spiel starten
       case "start_game": {
         const { roomId } = payload;
         const room = roomManager.getRoom(roomId);
@@ -103,7 +97,6 @@ wss.on("connection", (ws) => {
         break;
       }
 
-      // Punkte eingeben
       case "score_input": {
         gameLogic.handleScoreInput(payload);
         break;
