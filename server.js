@@ -5,6 +5,8 @@ import {
   registerClient,
   removeClient,
   getUserName,
+  getOnlineUserNames, // Importieren von userManager
+  setUserName,      // Die neue Funktion importieren
   broadcast,
   sendToClient,
 } from "./userManager.js";
@@ -29,8 +31,8 @@ wss.on("connection", (ws) => {
   console.log(`✅ Benutzer verbunden: ${clientId}`);
 
   ws.send(JSON.stringify({ type: "connected", clientId, name: getUserName(clientId) }));
+  // Send the current list immediately, guest name will be updated shortly
   broadcast({ type: "online_list", users: getOnlineUserNames() });
-  updateRoomList();
 
   ws.on("message", (msg) => {
     try {
@@ -52,6 +54,11 @@ wss.on("connection", (ws) => {
 
 function handleMessage(ws, clientId, data) {
   switch (data.type) {
+    // --- NEUER FALL HINZUGEFÜGT ---
+    case "auth":
+      setUserName(clientId, data.user);
+      break;
+
     case "ping":
       sendToClient(clientId, { type: "pong", message: "pong" });
       break;
@@ -85,8 +92,4 @@ function handleMessage(ws, clientId, data) {
     default:
       console.warn("⚠️ Unbekannter Nachrichtentyp:", data.type);
   }
-}
-
-function getOnlineUserNames() {
-  return Object.values(globalThis.userNames || {});
 }
