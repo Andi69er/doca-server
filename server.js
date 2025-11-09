@@ -1,14 +1,25 @@
 // server.js — DOCA WebDarts PRO Server
 import { WebSocketServer } from "ws";
-import { registerClient, removeClient, getUserName, getOnlineUserNames, setUserName, broadcast, sendToClient } from "./userManager.js";
+import { registerClient, removeClient, getUserName, getOnlineUserNames, setUserName, broadcast, sendToClient, findClientIdByName } from "./userManager.js";
 import { createRoom, joinRoom, leaveRoom, getRoomByClientId, updateRoomList } from "./roomManager.js";
 
 const PORT = process.env.PORT || 10000;
 const wss = new WebSocketServer({ port: PORT });
 console.log(`🚀 DOCA WebDarts Server läuft auf Port ${PORT}`);
 
-// Ein globales Objekt, um die Aufräum-Timer zu speichern
 globalThis.cleanupTimers = {};
+
+// Funktion, um einen Benutzer endgültig zu entfernen
+function cleanupUser(username) {
+    const clientId = findClientIdByName(username);
+    if (clientId) {
+        console.log(`⏰ Timer für ${username} (${clientId}) abgelaufen. Führe endgültiges Aufräumen durch.`);
+        leaveRoom(clientId);
+        removeClient(clientId);
+        broadcast({ type: "online_list", users: getOnlineUserNames() });
+    }
+    delete globalThis.cleanupTimers[username];
+}
 
 wss.on("connection", (ws) => {
   const clientId = registerClient(ws);
@@ -27,32 +38,34 @@ wss.on("connection", (ws) => {
     }
   });
 
-  // --- DAS IST DIE NEUE LOGIK FÜR TRENNUNGEN ---
   ws.on("close", () => {
-    console.log(`⌛️ Verbindung von ${clientId} getrennt. Starte 5-Sekunden-Timer zum Aufräumen.`);
-    
-    // Starte einen Timer. Wenn der Spieler nicht innerhalb von 5s zurückkommt, räumen wir auf.
-    globalThis.cleanupTimers[clientId] = setTimeout(() => {
-        console.log(`⏰ Timer für ${clientId} abgelaufen. Führe endgültiges Aufräumen durch.`);
-        leaveRoom(clientId);
+    const username = getUserName(clientId);
+    // Starte den Timer nur für authentifizierte Benutzer, nicht für frische Gäste
+    if (username && !username.startsWith("Gast-")) {
+        console.log(`⌛️ Verbindung von ${username} (${clientId}) getrennt. Starte 5-Sekunden-Timer.`);
+        // Wenn bereits ein Timer für diesen User läuft, lösche ihn (sollte nicht passieren, aber sicher ist sicher)
+        if (globalThis.cleanupTimers[username]) clearTimeout(globalThis.cleanupTimers[username]);
+        
+        globalThis.cleanupTimers[username] = setTimeout(() => cleanupUser(username), 5000);
+    } else {
+        // Gäste sofort entfernen
         removeClient(clientId);
-        broadcast({ type: "online_list", users: getOnlineUserNames() });
-        delete globalThis.cleanupTimers[clientId];
-    }, 5000); // 5 Sekunden Wartezeit
+    }
   });
 });
 
 function handleMessage(ws, clientId, data) {
-  // --- DAS IST DER GEGENTEILIGE TEIL DER LOGIK ---
-  // Wenn eine Nachricht von einem Spieler kommt, für den ein Timer läuft,
-  // bedeutet das, er hat sich erfolgreich neu verbunden.
-  if (globalThis.cleanupTimers[clientId]) {
-      console.log(`↪️ ${clientId} hat sich rechtzeitig zurückgemeldet. Aufräum-Timer wird gestoppt.`);
-      clearTimeout(globalThis.cleanupTimers[clientId]);
-      delete globalThis.cleanupTimers[clientId];
+  // Wenn eine "auth"-Nachricht kommt, stoppen wir einen eventuellen Timer für diesen BENUTZERNAMEN
+  if (data.type === "auth" && data.user) {
+      const username = data.user;
+      if (globalThis.cleanupTimers[username]) {
+          console.log(`↪️ ${username} hat sich rechtzeitig zurückgemeldet. Aufräum-Timer gestoppt.`);
+          clearTimeout(globalThis.cleanupTimers[username]);
+          delete globalThis.cleanupTimers[username];
+      }
   }
 
-  // Die normale Nachrichtenverarbeitung
+  // Normale Nachrichtenverarbeitung
   switch (data.type) {
     case "auth": 
       setUserName(clientId, data.user); 

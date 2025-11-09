@@ -6,30 +6,41 @@ globalThis.userRooms = {};
 function registerClient(ws) {
   const id = Math.random().toString(36).substring(2, 8);
   globalThis.clients[id] = ws;
-  globalThis.userNames[id] = "Gast-" + id;
-  globalThis.userRooms[id] = null;
+  globalThis.userNames[id] = "Gast-" + id; // Temporärer Name
   return id;
 }
 
 function setUserName(clientId, name) {
-  if (globalThis.userNames[clientId]) {
-    globalThis.userNames[clientId] = name || `Gast-${clientId.slice(0,4)}`;
+  if (globalThis.userNames[clientId] && name) {
+    globalThis.userNames[clientId] = name;
     console.log(`✅ Benutzer ${clientId} authentifiziert als: ${name}`);
     broadcastOnlineList();
   }
 }
 
 function removeClient(clientId) {
+  const username = globalThis.userNames[clientId];
   delete globalThis.clients[clientId];
   delete globalThis.userNames[clientId];
+  console.log(`🧹 Client ${clientId} (${username}) vollständig entfernt.`);
 }
 
 function getUserName(clientId) {
-  return globalThis.userNames[clientId] || "Unbekannt";
+  return globalThis.userNames[clientId];
+}
+
+// NEUE HILFSFUNKTION: Findet eine Client-ID anhand des Benutzernamens
+function findClientIdByName(username) {
+    for (const id in globalThis.userNames) {
+        if (globalThis.userNames[id] === username) {
+            return id;
+        }
+    }
+    return null;
 }
 
 function getOnlineUserNames() {
-  return Object.values(globalThis.userNames || {});
+  return Object.values(globalThis.userNames || {}).filter(name => !name.startsWith("Gast-"));
 }
 
 function broadcast(obj) {
@@ -39,8 +50,6 @@ function broadcast(obj) {
   }
 }
 
-// --- HIER IST DIE FEHLENDE FUNKTION ---
-// Sendet eine Nachricht nur an eine bestimmte Liste von Spielern
 function broadcastToPlayers(playerIds, obj) {
     const msg = JSON.stringify(obj);
     playerIds.forEach(id => {
@@ -61,12 +70,5 @@ function sendToClient(clientId, obj) {
 }
 
 export {
-  registerClient,
-  removeClient,
-  getUserName,
-  getOnlineUserNames,
-  broadcast,
-  sendToClient,
-  setUserName,
-  broadcastToPlayers // --- UND HIER WIRD SIE KORREKT EXPORTIERT ---
+  registerClient, removeClient, getUserName, getOnlineUserNames, setUserName, broadcast, sendToClient, broadcastToPlayers, findClientIdByName
 };
