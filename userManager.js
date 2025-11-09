@@ -39,6 +39,18 @@ function broadcast(obj) {
   }
 }
 
+// --- HIER IST DIE FEHLENDE FUNKTION ---
+// Sendet eine Nachricht nur an eine bestimmte Liste von Spielern
+function broadcastToPlayers(playerIds, obj) {
+    const msg = JSON.stringify(obj);
+    playerIds.forEach(id => {
+        const ws = globalThis.clients[id];
+        if (ws && ws.readyState === ws.OPEN) {
+            ws.send(msg);
+        }
+    });
+}
+
 function broadcastOnlineList() {
     broadcast({ type: "online_list", users: getOnlineUserNames() });
 }
@@ -56,4 +68,5 @@ export {
   broadcast,
   sendToClient,
   setUserName,
+  broadcastToPlayers // --- UND HIER WIRD SIE KORREKT EXPORTIERT ---
 };
