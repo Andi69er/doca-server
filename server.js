@@ -1,7 +1,7 @@
 // server.js — DOCA WebDarts PRO Server
 import { WebSocketServer } from "ws";
 import { registerClient, removeClient, getUserName, getOnlineUserNames, setUserName, broadcast, sendToClient, broadcastToPlayers, findClientIdByName } from "./userManager.js";
-import { createRoom, joinRoom, leaveRoom, getRoomByClientId, updateRoomList, broadcastRoomState } from "./roomManager.js"; // broadcastRoomState importieren
+import { createRoom, joinRoom, leaveRoom, getRoomByClientId, updateRoomList, getRoomState } from "./roomManager.js";
 import { Game } from "./gameLogic.js";
 
 const PORT = process.env.PORT || 10000;
@@ -27,23 +27,16 @@ function cleanupUser(username) {
 
 wss.on("connection", (ws) => {
   const clientId = registerClient(ws);
-  ws.send(JSON.stringify({ type: "connected", clientId, name: getUserName(clientId) }));
-  broadcast({ type: "online_list", users: getOnlineUserNames() });
-  updateRoomList();
-
   ws.on("message", (msg) => {
     try { const data = JSON.parse(msg); handleMessage(ws, clientId, data); } 
     catch (e) { console.error("❌ Ungültige Nachricht:", e); }
   });
-
   ws.on("close", () => {
     const username = getUserName(clientId);
     if (username && !username.startsWith("Gast-")) {
         if (globalThis.cleanupTimers[username]) clearTimeout(globalThis.cleanupTimers[username]);
         globalThis.cleanupTimers[username] = setTimeout(() => cleanupUser(username), 5000);
-    } else {
-        removeClient(clientId);
-    }
+    } else { removeClient(clientId); }
   });
 });
 
@@ -55,26 +48,33 @@ function handleMessage(ws, clientId, data) {
           delete globalThis.cleanupTimers[username];
       }
   }
+  
+  if (data.type === 'auth') {
+    setUserName(clientId, data.user);
+    ws.send(JSON.stringify({ type: "connected", clientId, name: data.user }));
+    broadcast({ type: "online_list", users: getOnlineUserNames() });
+    updateRoomList();
+    return;
+  }
 
   const room = getRoomByClientId(clientId);
 
   switch (data.type) {
-    case "auth": setUserName(clientId, data.user); break;
-    case "chat_global": broadcast({ type: "chat_global", user: getUserName(clientId), message: data.message }); break;
     case "create_room": createRoom(clientId, data.name, data); break;
-    case "join_room": joinRoom(clientId, data.roomId); break;
-    case "leave_room": leaveRoom(clientId); break;
-    case "list_rooms": updateRoomList(); break;
-    case "list_online": sendToClient(clientId, { type: "online_list", users: getOnlineUserNames() }); break;
-    
-    // --- DAS IST DER NEUE BEFEHL ---
-    case "request_room_info":
-        if (room) {
-            console.log(`Client ${clientId} fordert Infos für Raum ${room.id} an. Sende...`);
-            broadcastRoomState(room.id);
+    case "join_room": 
+        joinRoom(clientId, data.roomId);
+        const joinedRoom = getRoomByClientId(clientId);
+        if (joinedRoom) {
+            if (joinedRoom.game) {
+                broadcastToPlayers(joinedRoom.players, getEnrichedGameState(joinedRoom.game));
+            } else {
+                broadcastToPlayers(joinedRoom.players, getRoomState(joinedRoom.id));
+            }
         }
         break;
-
+    case "leave_room": leaveRoom(clientId); break;
+    case "list_rooms": updateRoomList(); break;
+    
     case "start_game":
         if (room && room.ownerId === clientId && room.players.length === 2) {
             room.game = new Game(room.players, room.options);
@@ -95,7 +95,6 @@ function handleMessage(ws, clientId, data) {
         }
         break;
         
-    default: 
-      console.warn("⚠️ Unbekannter Nachrichtentyp:", data.type);
+    default: console.warn("⚠️ Unbekannter Nachrichtentyp:", data.type);
   }
 }

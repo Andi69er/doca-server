@@ -3,53 +3,51 @@ import { broadcast, sendToClient, getUserName, broadcastToPlayers } from "./user
 
 globalThis.rooms = {};
 
-// Diese Funktion existiert bereits, wird jetzt aber exportiert
-function broadcastRoomState(roomId) {
+// Neue Funktion, die einen sauberen "Pre-Game"-Zustand sendet
+export function getRoomState(roomId) {
     const room = globalThis.rooms[roomId];
-    if (!room) return;
-
-    const playerNames = room.players.map(pid => getUserName(pid));
-    const roomState = {
-        type: "room_player_update",
-        roomId: room.id,
+    if (!room) return null;
+    return {
+        type: "game_state",
+        isStarted: false,
         players: room.players,
-        playerNames: playerNames,
+        playerNames: room.players.map(pid => getUserName(pid)),
+        scores: room.players.reduce((acc, pid) => {
+            acc[pid] = parseInt(room.options.distance) || 501;
+            return acc;
+        }, {}),
+        currentPlayerId: null,
+        winner: null,
+        options: room.options,
+        liveStats: {},
         isFull: room.players.length === room.maxPlayers,
         ownerId: room.ownerId
     };
-    if (room.players.length > 0) {
-        broadcastToPlayers(room.players, roomState);
-    }
 }
 
-function createRoom(clientId, name = "Neuer Raum", options = {}) {
+export function createRoom(clientId, name = "Neuer Raum", options = {}) {
   const id = Math.random().toString(36).substring(2, 8);
-  const room = { id, name, ownerId: clientId, players: [], maxPlayers: 2, options, game: null, createdAt: Date.now() };
+  const room = { id, name, ownerId: clientId, players: [], maxPlayers: 2, options, game: null };
   globalThis.rooms[id] = room;
   console.log(`🎯 Raum erstellt: ${name} (${id})`);
   joinRoom(clientId, id);
 }
 
-function joinRoom(clientId, roomId) {
+export function joinRoom(clientId, roomId) {
   const room = globalThis.rooms[roomId];
-  if (!room) {
-    console.error(`Fehler: Raum ${roomId} nicht gefunden.`);
-    return;
-  }
+  if (!room) return;
   
   leaveRoom(clientId, false); 
   
-  if (room.players.length < room.maxPlayers && !room.players.includes(clientId)) {
+  if (!room.players.includes(clientId) && room.players.length < room.maxPlayers) {
     room.players.push(clientId);
     globalThis.userRooms[clientId] = roomId;
-    sendToClient(clientId, { type: "joined_room", roomId: roomId });
   }
   
   updateRoomList();
-  broadcastRoomState(roomId);
 }
 
-function leaveRoom(clientId, doUpdate = true) {
+export function leaveRoom(clientId, doUpdate = true) {
   const rid = globalThis.userRooms[clientId];
   if (!rid || !globalThis.rooms[rid]) return;
   
@@ -58,11 +56,10 @@ function leaveRoom(clientId, doUpdate = true) {
   delete globalThis.userRooms[clientId];
 
   if (room.players.length === 0) {
-    console.log(`Raum ${rid} ist leer und wird gelöscht.`);
     delete globalThis.rooms[rid];
   } else {
     if (room.ownerId === clientId) { room.ownerId = room.players[0]; }
-    broadcastRoomState(rid);
+    broadcastToPlayers(room.players, getRoomState(rid));
   }
   
   if (doUpdate) {
@@ -70,21 +67,16 @@ function leaveRoom(clientId, doUpdate = true) {
   }
 }
 
-function getRoomByClientId(cid) {
+export function getRoomByClientId(cid) {
   const rid = globalThis.userRooms[cid];
   return rid ? globalThis.rooms[rid] : null;
 }
 
-function updateRoomList() {
+export function updateRoomList() {
   const list = Object.values(globalThis.rooms).map((r) => ({
     id: r.id, name: r.name, owner: getUserName(r.ownerId),
-    players: r.players.map((p) => getUserName(p)),
     playerCount: r.players.length, maxPlayers: r.maxPlayers,
     ...(r.options || {}),
   }));
   broadcast({ type: "room_update", rooms: list });
 }
-
-// --- HIER IST DIE KORREKTUR ---
-// broadcastRoomState wird jetzt zur Liste der exportierten Funktionen hinzugefügt.
-export { createRoom, joinRoom, leaveRoom, getRoomByClientId, updateRoomList, broadcastRoomState };
