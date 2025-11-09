@@ -1,5 +1,5 @@
-// server.js — DOCA WebDarts PRO Server (mit list_online Support)
-// Vollständige Datei — Copy & Paste
+// server.js — DOCA WebDarts PRO (komplett, stabil, synchronisiert)
+// Copy & Paste — ersetzt deine aktuelle Datei vollständig
 
 import { WebSocketServer } from "ws";
 import {
@@ -30,21 +30,21 @@ globalThis.cleanupTimers = {};
 
 wss.on("connection", (ws) => {
   const clientId = registerClient(ws);
-  console.log(`+ Client verbunden: ${clientId}`);
+  console.log(`+ Neuer Client verbunden: ${clientId}`);
 
   ws.on("message", (msg) => {
     let data = null;
     try {
       data = JSON.parse(msg);
     } catch (e) {
-      console.error("❌ Ungültige JSON-Nachricht:", e);
+      console.error("❌ Ungültige Nachricht:", e);
       return;
     }
     handleMessage(ws, clientId, data);
   });
 
   ws.on("close", () => {
-    console.log(`- Verbindung geschlossen: ${clientId}`);
+    console.log(`- Verbindung getrennt: ${clientId}`);
     if (globalThis.cleanupTimers[clientId])
       clearTimeout(globalThis.cleanupTimers[clientId]);
     globalThis.cleanupTimers[clientId] = setTimeout(() => {
@@ -76,6 +76,7 @@ function handleMessage(ws, clientId, data) {
   const type = data.type.toLowerCase();
 
   switch (type) {
+    // === Authentifizierung / Online ===
     case "auth": {
       const username = data.user || `Gast-${clientId}`;
       if (globalThis.cleanupTimers[clientId]) {
@@ -94,22 +95,30 @@ function handleMessage(ws, clientId, data) {
       break;
     }
 
+    // === Räume ===
     case "create_room": {
-      createRoom(clientId, data.name, data);
+      const roomId = createRoom(clientId, data.name, data);
+      const room = getRoomByClientId(clientId);
+      if (room) broadcastToPlayers(room.players, getRoomState(room.id));
+      updateRoomList();
       break;
     }
 
     case "join_room": {
       joinRoom(clientId, data.roomId);
-      const joinedRoom = getRoomByClientId(clientId);
-      if (joinedRoom) {
-        broadcastToPlayers(joinedRoom.players, getRoomState(joinedRoom.id));
+      const room = getRoomByClientId(clientId);
+      if (room) {
+        // → neu hinzugefügt: sofortige Synchronisierung für alle Spieler im Raum
+        const state = getRoomState(room.id);
+        broadcastToPlayers(room.players, state);
+        updateRoomList();
       }
       break;
     }
 
     case "leave_room": {
       leaveRoom(clientId);
+      updateRoomList();
       break;
     }
 
@@ -118,6 +127,7 @@ function handleMessage(ws, clientId, data) {
       break;
     }
 
+    // === Spielsteuerung ===
     case "start_game": {
       const room = getRoomByClientId(clientId);
       if (room && room.ownerId === clientId && room.players.length >= 1) {
@@ -146,6 +156,7 @@ function handleMessage(ws, clientId, data) {
       break;
     }
 
+    // === Chat ===
     case "chat_global": {
       const msg = {
         type: "chat_global",
