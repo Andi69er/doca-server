@@ -9,10 +9,26 @@ class RoomManager {
   /**
    * Raum erstellen
    */
-  createRoom(clientId, name = "Neuer Raum") {
+  createRoom(clientId, name = "Neuer Raum", options = {}) {
     const id = "r" + Math.random().toString(36).substr(2, 6);
-    this.rooms.set(id, { id, name, players: [clientId], maxPlayers: 2 });
-    console.log(`🎯 Raum erstellt: ${name} (${id})`);
+
+    // Spielername des Erstellers speichern
+    const creatorName = options.creator || options.username || clientId;
+
+    // Spielinfos (Distanz / Finish / Variante)
+    const roomData = {
+      id,
+      name,
+      creator: creatorName,
+      distance: options.distance || options.startingScore || "501",
+      finish: options.finish || options.finishType || "Do",
+      variant: options.variant || "",
+      players: [clientId],
+      maxPlayers: 2
+    };
+
+    this.rooms.set(id, roomData);
+    console.log(`🎯 Raum erstellt: ${name} (${id}) von ${creatorName}`);
     this.updateRooms();
     return id;
   }
@@ -33,7 +49,7 @@ class RoomManager {
   handleMessage(ws, data, clientId) {
     switch (data.type) {
       case "create_room":
-        const roomId = this.createRoom(clientId, data.name);
+        const roomId = this.createRoom(clientId, data.name, data);
         sendToClient(clientId, { type: "joined_room", roomId });
         break;
 
@@ -44,18 +60,9 @@ class RoomManager {
         });
         break;
 
-      // 👇 Neuer Fall: list_online wird ignoriert, kein unnötiger Logeintrag
-      case "list_online":
-        // Diese Nachricht stammt vom Client-Refresh. Kein Log notwendig.
-        // Optional: Wenn du möchtest, kannst du hier später eine echte Userliste senden.
-        break;
-
       default:
-        // Nur wirklich unbekannte Typen melden
-        if (data.type && !["ping", "pong"].includes(data.type)) {
-          console.warn(`⚠️ Unbekannter Typ ignoriert: ${data.type}`);
-        }
-        // Keine Nachricht an den Client senden – vermeidet "Server Log"-Spam
+        // Nur Debug auf Server, nicht an Client
+        console.log(`⚠️ Unbekannter Typ vom Client: ${data.type}`);
         break;
     }
   }
