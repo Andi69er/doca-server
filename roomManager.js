@@ -44,11 +44,18 @@ class RoomManager {
         });
         break;
 
+      // 👇 Neuer Fall: list_online wird ignoriert, kein unnötiger Logeintrag
+      case "list_online":
+        // Diese Nachricht stammt vom Client-Refresh. Kein Log notwendig.
+        // Optional: Wenn du möchtest, kannst du hier später eine echte Userliste senden.
+        break;
+
       default:
-        sendToClient(clientId, {
-          type: "server_log",
-          message: `Unbekannter Typ: ${data.type}`
-        });
+        // Nur wirklich unbekannte Typen melden
+        if (data.type && !["ping", "pong"].includes(data.type)) {
+          console.warn(`⚠️ Unbekannter Typ ignoriert: ${data.type}`);
+        }
+        // Keine Nachricht an den Client senden – vermeidet "Server Log"-Spam
         break;
     }
   }
