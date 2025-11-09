@@ -1,5 +1,6 @@
 // userManager.js — DOCA WebDarts PRO
-import { broadcast, sendToClient } from "./userManager.js";
+import { getRoomByClientId, updateRoomList } from "./roomManager.js";
+import { Game } from "./gameLogic.js";
 
 globalThis.clients = {};
 globalThis.userNames = {};
@@ -8,18 +9,17 @@ globalThis.userRooms = {};
 function registerClient(ws) {
   const id = Math.random().toString(36).substring(2, 8);
   globalThis.clients[id] = ws;
-  // User starts as a guest, will be updated upon authentication
   globalThis.userNames[id] = "Gast-" + id;
   globalThis.userRooms[id] = null;
   return id;
 }
 
-// --- NEUE FUNKTION HINZUGEFÜGT ---
+// NEUE FUNKTION, um den Namen nach der Authentifizierung zu setzen
 function setUserName(clientId, name) {
   if (globalThis.userNames[clientId]) {
     globalThis.userNames[clientId] = name || `Gast-${clientId.slice(0,4)}`;
     console.log(`✅ Benutzer ${clientId} authentifiziert als: ${name}`);
-    // Broadcast the updated online list to everyone
+    // Sende die aktualisierte Online-Liste an alle
     broadcastOnlineList();
   }
 }
@@ -27,7 +27,7 @@ function setUserName(clientId, name) {
 function removeClient(clientId) {
   delete globalThis.clients[clientId];
   delete globalThis.userNames[clientId];
-  // No need to delete from userRooms here, leaveRoom handles it
+  // userRooms wird durch leaveRoom bereinigt
 }
 
 function getUserName(clientId) {
@@ -35,7 +35,7 @@ function getUserName(clientId) {
 }
 
 function getOnlineUserNames() {
-    return Object.values(globalThis.userNames || {});
+  return Object.values(globalThis.userNames || {});
 }
 
 function broadcast(obj) {
@@ -45,6 +45,7 @@ function broadcast(obj) {
   }
 }
 
+// Kleine Helferfunktion, um die Online-Liste zu senden
 function broadcastOnlineList() {
     broadcast({ type: "online_list", users: getOnlineUserNames() });
 }
@@ -80,14 +81,13 @@ function handleClientMessage(clientId, data) {
   }
 }
 
-// Exporte anpassen
 export {
   registerClient,
   removeClient,
   getUserName,
-  getOnlineUserNames,
+  getOnlineUserNames, // Hinzugefügt für den Server
   broadcast,
   sendToClient,
   handleClientMessage,
-  setUserName // Wichtig: die neue Funktion exportieren
+  setUserName, // Die neue Funktion exportieren
 };
