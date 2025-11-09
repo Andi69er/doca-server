@@ -1,7 +1,8 @@
 // server.js — DOCA WebDarts PRO Server
 import { WebSocketServer } from "ws";
-import { registerClient, removeClient, getUserName, getOnlineUserNames, setUserName, broadcast, sendToClient, findClientIdByName } from "./userManager.js";
+import { registerClient, removeClient, getUserName, getOnlineUserNames, setUserName, broadcast, sendToClient, broadcastToPlayers, findClientIdByName } from "./userManager.js";
 import { createRoom, joinRoom, leaveRoom, getRoomByClientId, updateRoomList } from "./roomManager.js";
+import { Game } from "./gameLogic.js"; // Die Spiellogik wieder importieren
 
 const PORT = process.env.PORT || 10000;
 const wss = new WebSocketServer({ port: PORT });
@@ -9,11 +10,17 @@ console.log(`🚀 DOCA WebDarts Server läuft auf Port ${PORT}`);
 
 globalThis.cleanupTimers = {};
 
-// Funktion, um einen Benutzer endgültig zu entfernen
+// Helfer, um den Spielzustand mit Namen anzureichern
+function getEnrichedGameState(game) {
+    const state = game.getState();
+    state.playerNames = state.players.map(pid => getUserName(pid));
+    return state;
+}
+
 function cleanupUser(username) {
     const clientId = findClientIdByName(username);
     if (clientId) {
-        console.log(`⏰ Timer für ${username} (${clientId}) abgelaufen. Führe endgültiges Aufräumen durch.`);
+        console.log(`⏰ Timer für ${username} abgelaufen. Aufräumen.`);
         leaveRoom(clientId);
         removeClient(clientId);
         broadcast({ type: "online_list", users: getOnlineUserNames() });
@@ -29,65 +36,65 @@ wss.on("connection", (ws) => {
   updateRoomList();
 
   ws.on("message", (msg) => {
-    try { 
-      const data = JSON.parse(msg); 
-      handleMessage(ws, clientId, data); 
-    } 
-    catch (e) { 
-      console.error("❌ Ungültige Nachricht:", e); 
-    }
+    try { const data = JSON.parse(msg); handleMessage(ws, clientId, data); } 
+    catch (e) { console.error("❌ Ungültige Nachricht:", e); }
   });
 
   ws.on("close", () => {
     const username = getUserName(clientId);
-    // Starte den Timer nur für authentifizierte Benutzer, nicht für frische Gäste
     if (username && !username.startsWith("Gast-")) {
-        console.log(`⌛️ Verbindung von ${username} (${clientId}) getrennt. Starte 5-Sekunden-Timer.`);
-        // Wenn bereits ein Timer für diesen User läuft, lösche ihn (sollte nicht passieren, aber sicher ist sicher)
+        console.log(`⌛️ Verbindung von ${username} getrennt. Starte 5s Timer.`);
         if (globalThis.cleanupTimers[username]) clearTimeout(globalThis.cleanupTimers[username]);
-        
         globalThis.cleanupTimers[username] = setTimeout(() => cleanupUser(username), 5000);
     } else {
-        // Gäste sofort entfernen
         removeClient(clientId);
     }
   });
 });
 
 function handleMessage(ws, clientId, data) {
-  // Wenn eine "auth"-Nachricht kommt, stoppen wir einen eventuellen Timer für diesen BENUTZERNAMEN
   if (data.type === "auth" && data.user) {
       const username = data.user;
       if (globalThis.cleanupTimers[username]) {
-          console.log(`↪️ ${username} hat sich rechtzeitig zurückgemeldet. Aufräum-Timer gestoppt.`);
+          console.log(`↪️ ${username} zurückgemeldet. Timer gestoppt.`);
           clearTimeout(globalThis.cleanupTimers[username]);
           delete globalThis.cleanupTimers[username];
       }
   }
 
-  // Normale Nachrichtenverarbeitung
+  const room = getRoomByClientId(clientId);
+
   switch (data.type) {
-    case "auth": 
-      setUserName(clientId, data.user); 
-      break;
-    case "chat_global": 
-      broadcast({ type: "chat_global", user: getUserName(clientId), message: data.message }); 
-      break;
-    case "create_room": 
-      createRoom(clientId, data.name, data); 
-      break;
-    case "join_room": 
-      joinRoom(clientId, data.roomId); 
-      break;
-    case "leave_room": 
-      leaveRoom(clientId); 
-      break;
-    case "list_rooms": 
-      updateRoomList(); 
-      break;
-    case "list_online": 
-      sendToClient(clientId, { type: "online_list", users: getOnlineUserNames() }); 
-      break;
+    // --- LOBBY & AUTH ---
+    case "auth": setUserName(clientId, data.user); break;
+    case "chat_global": broadcast({ type: "chat_global", user: getUserName(clientId), message: data.message }); break;
+    case "create_room": createRoom(clientId, data.name, data); break;
+    case "join_room": joinRoom(clientId, data.roomId); break;
+    case "leave_room": leaveRoom(clientId); break;
+    case "list_rooms": updateRoomList(); break;
+    case "list_online": sendToClient(clientId, { type: "online_list", users: getOnlineUserNames() }); break;
+    
+    // --- SPIEL-NACHRICHTEN (WIEDER HINZUGEFÜGT) ---
+    case "start_game":
+        if (room && room.ownerId === clientId && room.players.length === 2) {
+            room.game = new Game(room.players, room.options);
+            room.game.start();
+            broadcastToPlayers(room.players, getEnrichedGameState(room.game));
+        }
+        break;
+    case "player_throw":
+        if (room && room.game) {
+            room.game.playerThrow(clientId, data.value, data.mult);
+            broadcastToPlayers(room.players, getEnrichedGameState(room.game));
+        }
+        break;
+    case "undo_throw":
+        if (room && room.game) {
+            room.game.undoLastThrow(clientId);
+            broadcastToPlayers(room.players, getEnrichedGameState(room.game));
+        }
+        break;
+        
     default: 
       console.warn("⚠️ Unbekannter Nachrichtentyp:", data.type);
   }
