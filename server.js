@@ -1,6 +1,8 @@
 import express from "express";
 import http from "http";
 import { WebSocketServer } from "ws";
+
+// Dynamisch alles laden, egal wie es exportiert ist
 import * as roomManager from "./roomManager.js";
 import * as userManager from "./userManager.js";
 import * as gameLogic from "./gameLogic.js";
@@ -10,9 +12,19 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 const PORT = process.env.PORT || 10000;
 
-// Render-HTTP-Check
-app.get("/", (req, res) => res.send("✅ DOCA WebDarts Server is running"));
+// Render-Ping
+app.get("/", (_, res) => res.send("✅ DOCA WebDarts Server is running"));
 
+// Hilfsfunktionen – prüfen, ob Funktion existiert
+const safeCall = (mod, fn, ...args) => {
+  try {
+    if (typeof mod?.[fn] === "function") return mod[fn](...args);
+  } catch (e) {
+    console.error(`❌ Fehler in ${fn}:`, e.message);
+  }
+};
+
+// Haupt-WebSocket-Logik
 wss.on("connection", (ws) => {
   console.log("✅ Neuer Client verbunden.");
 
@@ -21,101 +33,85 @@ wss.on("connection", (ws) => {
     try {
       data = JSON.parse(msg);
     } catch {
-      console.error("❌ Ungültiges JSON:", msg);
+      console.error("❌ Ungültiges JSON");
       return;
     }
 
-    const { type, payload } = data;
+    const { type, payload = {} } = data;
 
     switch (type) {
-      // ---------------------- LOGIN ----------------------
       case "login":
-      case "auth": {
-        userManager.addUser(ws, payload?.username || "Gast");
+      case "auth":
+        safeCall(userManager, "addUser", ws, payload.username || "Gast");
         broadcastOnlineList();
         break;
-      }
 
-      // ---------------------- LOGOUT ---------------------
-      case "logout": {
-        userManager.removeUser(ws);
+      case "logout":
+        safeCall(userManager, "removeUser", ws);
         broadcastOnlineList();
         break;
-      }
 
-      // ---------------------- RÄUME -----------------------
       case "create_room": {
-        const clientId = ws; // Socket selbst als ID
-        const roomId = roomManager.createRoom(
-          clientId,
-          payload?.username || "Neuer Raum",
-          payload?.options || {}
+        const id = safeCall(
+          roomManager,
+          "createRoom",
+          ws,
+          payload.username || "Neuer Raum",
+          payload.options || {}
         );
-        ws.send(JSON.stringify({ type: "room_created", payload: { roomId } }));
+        ws.send(JSON.stringify({ type: "room_created", payload: { roomId: id } }));
         break;
       }
 
       case "join_room": {
-        const clientId = ws;
-        const roomId = payload?.roomId;
-        roomManager.joinRoom(clientId, roomId);
-
-        const state = roomManager.getRoomState(roomId);
+        const { roomId } = payload;
+        safeCall(roomManager, "joinRoom", ws, roomId);
+        const state = safeCall(roomManager, "getRoomState", roomId);
         if (state && roomManager.broadcastToPlayers)
-          roomManager.broadcastToPlayers(state.players, state);
-
-        roomManager.updateRoomList();
-        console.log(`👥 Spieler ist Raum ${roomId} beigetreten.`);
+          safeCall(roomManager, "broadcastToPlayers", state.players, state);
+        safeCall(roomManager, "updateRoomList");
         break;
       }
 
-      // ---------------------- CHAT -----------------------
       case "chat_message": {
-        const clientId = ws;
-        const room = roomManager.getRoomByClientId?.(clientId);
+        const room = safeCall(roomManager, "getRoomByClientId", ws);
         if (room && roomManager.broadcastToPlayers) {
-          roomManager.broadcastToPlayers(room.players, {
+          safeCall(roomManager, "broadcastToPlayers", room.players, {
             type: "chat_message",
             payload: {
-              username: userManager.getUserName?.(clientId) || "Unbekannt",
-              message: payload?.message || "",
+              username: safeCall(userManager, "getUserName", ws) || "Unbekannt",
+              message: payload.message || "",
             },
           });
         }
         break;
       }
 
-      // ---------------------- SPIEL ----------------------
       case "start_game": {
-        const roomId = payload?.roomId;
-        const state = roomManager.getRoomState(roomId);
-        if (state && roomManager.broadcastToPlayers) {
-          roomManager.broadcastToPlayers(state.players, {
+        const { roomId } = payload;
+        const state = safeCall(roomManager, "getRoomState", roomId);
+        if (state && roomManager.broadcastToPlayers)
+          safeCall(roomManager, "broadcastToPlayers", state.players, {
             type: "game_started",
             payload: { roomId },
           });
-        }
         break;
       }
 
-      case "score_input": {
-        if (gameLogic.handleScoreInput)
-          gameLogic.handleScoreInput(payload);
+      case "score_input":
+        safeCall(gameLogic, "handleScoreInput", payload);
         break;
-      }
 
-      // ---------------------- FRONTEND -------------------
       case "list_rooms":
-        roomManager.updateRoomList();
+        safeCall(roomManager, "updateRoomList");
         break;
 
       case "list_online":
         broadcastOnlineList();
         break;
 
-      // ---------------------- FALLBACK -------------------
       default:
-        // Log nur 1× pro Nachrichtentyp
+        // Nur einmal pro Typ warnen
         if (!loggedUnknown.has(type)) {
           loggedUnknown.add(type);
           console.warn("⚠️ Unbekannter Nachrichtentyp:", type);
@@ -125,21 +121,20 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
-    // Socket als ID verwenden
-    roomManager.leaveRoom(ws);
-    userManager.removeUser(ws);
+    safeCall(roomManager, "leaveRoom", ws);
+    safeCall(userManager, "removeUser", ws);
     broadcastOnlineList();
-    console.log("❌ Client getrennt.");
+    console.log("❌ Verbindung getrennt");
   });
 });
 
 const loggedUnknown = new Set();
 
 function broadcastOnlineList() {
-  const list = (userManager.getAllUsernames?.() || []).filter(Boolean);
+  const list = safeCall(userManager, "getAllUsernames") || [];
   const msg = JSON.stringify({ type: "online_list", payload: list });
-  wss.clients.forEach((client) => {
-    if (client.readyState === 1) client.send(msg);
+  wss.clients.forEach((c) => {
+    if (c.readyState === 1) c.send(msg);
   });
 }
 
