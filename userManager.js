@@ -1,22 +1,29 @@
 // userManager.js — DOCA WebDarts PRO
-// Stable, named exports. Works with WebSocket instances or clientId strings.
+// Stabil, robuste Named exports. Arbeitet mit WebSocket-Instanzen oder clientId strings.
 
 const clients = new Map();     // clientId -> ws
 const users = new Map();       // clientId -> { username }
 const sockets = new WeakMap(); // ws -> clientId
 
 /**
+ * Generiert neue, collisionsarme clientId
+ */
+function makeClientId() {
+  return Math.random().toString(36).substring(2, 9);
+}
+
+/**
  * Register a new connection. Returns clientId (string).
- * If ws already registered, returns existing id.
+ * If ws already registered, returns existing id (and updates name if provided).
  */
 export function addUser(ws, username = "Gast") {
+  if (!ws) return null;
   if (sockets.has(ws)) {
     const existing = sockets.get(ws);
-    // update name if provided
     if (username) users.set(existing, { username });
     return existing;
   }
-  const clientId = Math.random().toString(36).substring(2, 9);
+  const clientId = makeClientId();
   clients.set(clientId, ws);
   users.set(clientId, { username });
   sockets.set(ws, clientId);
@@ -28,6 +35,7 @@ export function addUser(ws, username = "Gast") {
  */
 export function removeUser(target) {
   let clientId = null;
+  if (!target) return false;
   if (typeof target === "string") clientId = target;
   else clientId = sockets.get(target);
 
@@ -55,7 +63,7 @@ export function setUserName(target, username) {
   const clientId = getClientId(target);
   if (!clientId) return false;
   const record = users.get(clientId) || {};
-  record.username = username;
+  record.username = username || record.username || `Gast-${clientId}`;
   users.set(clientId, record);
   return true;
 }
@@ -103,8 +111,10 @@ export function broadcast(obj) {
   const data = JSON.stringify(obj);
   for (const ws of clients.values()) {
     try {
-      if (ws.readyState === ws.OPEN) ws.send(data);
-    } catch (e) {}
+      if (ws && ws.readyState === ws.OPEN) ws.send(data);
+    } catch (e) {
+      // ignore individual send errors
+    }
   }
 }
 
@@ -112,6 +122,7 @@ export function broadcast(obj) {
  * Send to a list of playerIds (clientIds).
  */
 export function broadcastToPlayers(playerIds = [], obj) {
+  if (!Array.isArray(playerIds)) return;
   const data = JSON.stringify(obj);
   for (const pid of playerIds) {
     const ws = clients.get(pid);

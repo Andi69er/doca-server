@@ -1,5 +1,5 @@
 // roomManager.js — DOCA WebDarts PRO
-// Uses userManager functions to get names / send messages.
+// Verwaltet Räume; nutzt userManager functions für Namen/Sends.
 
 import {
   getUserName,
@@ -16,17 +16,15 @@ const GRACE_MS = 30 * 1000; // 30s grace before deleting empty room
 
 function makeRoomState(room) {
   return {
-    type: "game_state",
+    type: "room_state",
     id: room.id,
     name: room.name,
     ownerId: room.ownerId,
     players: room.players.slice(),
     playerNames: room.players.map((p) => getUserName(p) || "Gast"),
     options: room.options || {},
-    isStarted: !!room.game?.isStarted,
-    winner: room.game?.winner || null,
-    scores: room.game?.scores || {},
-    currentPlayerId: room.game?.currentPlayerId || null,
+    maxPlayers: room.maxPlayers,
+    createdAt: room.createdAt
   };
 }
 
@@ -34,7 +32,7 @@ export function createRoom(clientIdOrWs, name = "Neuer Raum", options = {}) {
   const clientId = typeof clientIdOrWs === "string" ? clientIdOrWs : getClientId(clientIdOrWs);
   if (!clientId) return null;
 
-  // if already in a room, return existing
+  // if already in a room, return existing room id
   if (userRooms.has(clientId)) {
     return userRooms.get(clientId);
   }
@@ -60,6 +58,8 @@ export function createRoom(clientIdOrWs, name = "Neuer Raum", options = {}) {
   }
 
   updateRoomList();
+  // notify owner directly
+  try { broadcastToPlayers([clientId], { type: "room_created", roomId: id, name }); } catch {}
   return id;
 }
 
@@ -168,12 +168,6 @@ export function updateRoomList() {
     maxPlayers: r.maxPlayers,
     options: r.options || {}
   }));
+  // standardisiertes Paket
   broadcast({ type: "room_update", rooms: list });
-}
-
-/* Debug / export */
-export function listRooms() {
-  return Array.from(rooms.values()).map(r => ({
-    id: r.id, players: r.players.slice()
-  }));
 }
