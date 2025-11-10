@@ -12,7 +12,12 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 const PORT = process.env.PORT || 10000;
 
-// Verbindung WebSocket
+// *** Render braucht eine HTTP-Antwort, sonst Time-Out ***
+app.get("/", (req, res) => {
+  res.send("✅ DOCA WebDarts Server is running");
+});
+
+// --- WebSocket-Verbindungen ---
 wss.on("connection", (ws) => {
   console.log("✅ Neuer Client verbunden.");
 
@@ -20,7 +25,7 @@ wss.on("connection", (ws) => {
     let data;
     try {
       data = JSON.parse(message);
-    } catch (err) {
+    } catch {
       console.error("❌ Ungültiges JSON:", message);
       return;
     }
@@ -28,21 +33,18 @@ wss.on("connection", (ws) => {
     const { type, payload } = data;
 
     switch (type) {
-      // Spielerlogin
       case "login": {
         userManager.addUser(ws, payload.username);
         broadcastOnlineList();
         break;
       }
 
-      // Logout
       case "logout": {
         userManager.removeUser(ws);
         broadcastOnlineList();
         break;
       }
 
-      // Raum erstellen
       case "create_room": {
         const clientId = userManager.getClientId(ws);
         const roomId = roomManager.createRoom(clientId, payload.username, payload.options);
@@ -50,48 +52,49 @@ wss.on("connection", (ws) => {
         break;
       }
 
-      // Raum beitreten
       case "join_room": {
         const clientId = userManager.getClientId(ws);
         const { roomId } = payload;
         roomManager.joinRoom(clientId, roomId);
 
-        // Nach dem Beitritt: beide Spieler synchronisieren
+        // Nach dem Beitritt: synchronisiere Raumzustand an alle Spieler
         const state = roomManager.getRoomState(roomId);
-        if (state) {
-          roomManager.updateRoomList();
-          userManager.broadcastToRoom?.(roomId, state);
+        if (state && roomManager.broadcastToPlayers) {
+          roomManager.broadcastToPlayers(state.players, state);
         }
-
+        roomManager.updateRoomList();
         console.log(`👥 ${userManager.getUserName(clientId)} ist Raum ${roomId} beigetreten.`);
         break;
       }
 
-      // Chatnachricht
       case "chat_message": {
         const clientId = userManager.getClientId(ws);
-        const { roomId, message: msg } = payload;
-        roomManager.broadcastToPlayers(roomManager.getRoomByClientId(clientId)?.players || [], {
-          type: "chat_message",
-          payload: { username: userManager.getUserName(clientId), message: msg },
-        });
-        break;
-      }
-
-      // Spiel starten
-      case "start_game": {
-        const { roomId } = payload;
-        const state = roomManager.getRoomState(roomId);
-        if (state) {
-          roomManager.broadcastToPlayers(state.players, {
-            type: "game_started",
-            payload: { roomId },
+        const { message: msg } = payload;
+        const room = roomManager.getRoomByClientId(clientId);
+        if (room) {
+          roomManager.broadcastToPlayers(room.players, {
+            type: "chat_message",
+            payload: {
+              username: userManager.getUserName(clientId),
+              message: msg
+            }
           });
         }
         break;
       }
 
-      // Punkte eingeben
+      case "start_game": {
+        const { roomId } = payload;
+        const state = roomManager.getRoomState(roomId);
+        if (state && roomManager.broadcastToPlayers) {
+          roomManager.broadcastToPlayers(state.players, {
+            type: "game_started",
+            payload: { roomId }
+          });
+        }
+        break;
+      }
+
       case "score_input": {
         gameLogic.handleScoreInput(payload);
         break;
@@ -104,10 +107,9 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
-    const username = userManager.getUserName(userManager.getClientId(ws));
     const clientId = userManager.getClientId(ws);
+    const username = userManager.getUserName(clientId);
 
-    // Entferne Spieler
     roomManager.leaveRoom(clientId);
     userManager.removeUser(ws);
     broadcastOnlineList();
