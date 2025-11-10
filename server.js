@@ -1,5 +1,4 @@
-// server.js — DOCA WebDarts (final, with /debug-ws)
-// Vollständig, funktionsfähig, für Render.com optimiert
+// server.js (FINAL - with diagnostic logging)
 import express from "express";
 import http from "http";
 import { WebSocketServer } from "ws";
@@ -66,6 +65,8 @@ wss.on("connection", (ws) => {
 
       case "create_room": {
         const rname = payload.name || `Raum-${Math.random().toString(36).slice(2,5)}`;
+        // Diagnostic Log
+        console.log(`Raum wird erstellt: "${rname}" mit Optionen:`, payload.options);
         const rid = roomManager.createRoom(uid, rname, payload.options || {});
         userManager.sendToClient?.(uid, { type: "room_created", roomId: rid, name: rname });
         roomManager.updateRoomList?.();
@@ -134,7 +135,6 @@ wss.on("connection", (ws) => {
           const players = state.players || [];
           roomManager.broadcastToPlayers?.(players, { type: "game_state", ...state, playerNames: players.map(p => userManager.getUserName(p)) });
         }
-        // KORREKTUR: Die Zeile wurde repariert und der doppelte Aufruf entfernt.
         userManager.sendToClient?.(uid, { type: "action_result", action: "undo_throw", ok: !!ok });
         break;
       }
@@ -159,7 +159,7 @@ wss.on("connection", (ws) => {
   ws.on("close", () => {
     roomManager.leaveRoom?.(ws.clientId);
     userManager.removeUser?.(ws);
-broadcastOnline();
+    broadcastOnline();
     roomManager.updateRoomList?.();
     console.log("❌ Client getrennt:", ws.clientId);
   });
@@ -189,54 +189,23 @@ function broadcastOnline() {
   } catch (e) {}
 }
 
-// --- HTTP routes ---
-app.get("/", (req, res) => {
-  res.type("text/plain").send("DOCA WebDarts Server is running");
-});
-
-app.get("/status", (req, res) => {
-  res.json({
-    status: "ok",
-    clients: wss.clients.size,
-    rooms: typeof roomManager.getRoomState === "function" ? "available" : "unknown"
-  });
-});
-
-// --- DEBUG ROUTE ---
+app.get("/", (req, res) => { res.type("text/plain").send("DOCA WebDarts Server is running"); });
+app.get("/status", (req, res) => { res.json({ status: "ok", clients: wss.clients.size, rooms: typeof roomManager.getRoomState === "function" ? "available" : "unknown" }); });
 app.get("/debug-ws", (req, res) => {
   try {
     const users = userManager.listOnlineUsers?.() || [];
     const roomList = roomManager.listRooms?.() || [];
-    const activeGames = Array.from(games.entries()).map(([id, g]) => ({
-      roomId: id,
-      state: g.getState?.() || {}
-    }));
-    res.json({
-      time: new Date().toISOString(),
-      totalClients: wss.clients.size,
-      users,
-      rooms: roomList,
-      games: activeGames
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message || e });
-  }
+    const activeGames = Array.from(games.entries()).map(([id, g]) => ({ roomId: id, state: g.getState?.() || {} }));
+    res.json({ time: new Date().toISOString(), totalClients: wss.clients.size, users, rooms: roomList, games: activeGames });
+  } catch (e) { res.status(500).json({ error: e.message || e }); }
 });
 
-// --- SHUTDOWN ---
 function shutdown() {
   console.log("Shutting down WebSocket server...");
   clearInterval(interval);
-  wss.close(() => {
-    server.close(() => {
-      console.log("Server closed");
-      process.exit(0);
-    });
-  });
+  wss.close(() => { server.close(() => { console.log("Server closed"); process.exit(0); }); });
 }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
-server.listen(PORT, () => {
-  console.log(`🚀 DOCA WebDarts Server läuft auf Port ${PORT}`);
-});
+server.listen(PORT, () => { console.log(`🚀 DOCA WebDarts Server läuft auf Port ${PORT}`); });
