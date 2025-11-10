@@ -10,7 +10,7 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 const PORT = process.env.PORT || 10000;
 
-// Render-Ping, damit Deploy nie mehr hängen bleibt
+// Render-HTTP-Check
 app.get("/", (req, res) => res.send("✅ DOCA WebDarts Server is running"));
 
 wss.on("connection", (ws) => {
@@ -26,13 +26,9 @@ wss.on("connection", (ws) => {
     }
 
     const { type, payload } = data;
-    const safeClientId =
-      (userManager.getClientId && userManager.getClientId(ws)) || ws.id || ws;
 
     switch (type) {
-      // ------------------------------------
-      // LOGIN / LOGOUT
-      // ------------------------------------
+      // ---------------------- LOGIN ----------------------
       case "login":
       case "auth": {
         userManager.addUser(ws, payload?.username || "Gast");
@@ -40,50 +36,48 @@ wss.on("connection", (ws) => {
         break;
       }
 
+      // ---------------------- LOGOUT ---------------------
       case "logout": {
         userManager.removeUser(ws);
         broadcastOnlineList();
         break;
       }
 
-      // ------------------------------------
-      // RAUM-LOGIK
-      // ------------------------------------
+      // ---------------------- RÄUME -----------------------
       case "create_room": {
+        const clientId = ws; // Socket selbst als ID
         const roomId = roomManager.createRoom(
-          safeClientId,
+          clientId,
           payload?.username || "Neuer Raum",
           payload?.options || {}
         );
-        ws.send(
-          JSON.stringify({ type: "room_created", payload: { roomId } })
-        );
+        ws.send(JSON.stringify({ type: "room_created", payload: { roomId } }));
         break;
       }
 
       case "join_room": {
+        const clientId = ws;
         const roomId = payload?.roomId;
-        roomManager.joinRoom(safeClientId, roomId);
+        roomManager.joinRoom(clientId, roomId);
 
         const state = roomManager.getRoomState(roomId);
-        if (state && roomManager.broadcastToPlayers) {
+        if (state && roomManager.broadcastToPlayers)
           roomManager.broadcastToPlayers(state.players, state);
-        }
+
         roomManager.updateRoomList();
-        console.log(`👥 ${userManager.getUserName?.(safeClientId)} ist Raum ${roomId} beigetreten.`);
+        console.log(`👥 Spieler ist Raum ${roomId} beigetreten.`);
         break;
       }
 
-      // ------------------------------------
-      // CHAT
-      // ------------------------------------
+      // ---------------------- CHAT -----------------------
       case "chat_message": {
-        const room = roomManager.getRoomByClientId?.(safeClientId);
+        const clientId = ws;
+        const room = roomManager.getRoomByClientId?.(clientId);
         if (room && roomManager.broadcastToPlayers) {
           roomManager.broadcastToPlayers(room.players, {
             type: "chat_message",
             payload: {
-              username: userManager.getUserName?.(safeClientId) || "Unbekannt",
+              username: userManager.getUserName?.(clientId) || "Unbekannt",
               message: payload?.message || "",
             },
           });
@@ -91,9 +85,7 @@ wss.on("connection", (ws) => {
         break;
       }
 
-      // ------------------------------------
-      // SPIEL-LOGIK
-      // ------------------------------------
+      // ---------------------- SPIEL ----------------------
       case "start_game": {
         const roomId = payload?.roomId;
         const state = roomManager.getRoomState(roomId);
@@ -112,9 +104,7 @@ wss.on("connection", (ws) => {
         break;
       }
 
-      // ------------------------------------
-      // LISTEN-ANFRAGEN (Frontend)
-      // ------------------------------------
+      // ---------------------- FRONTEND -------------------
       case "list_rooms":
         roomManager.updateRoomList();
         break;
@@ -123,28 +113,27 @@ wss.on("connection", (ws) => {
         broadcastOnlineList();
         break;
 
-      // ------------------------------------
-      // FALLBACK
-      // ------------------------------------
+      // ---------------------- FALLBACK -------------------
       default:
-        // Nur einmal pro Typ loggen
-        if (!["ping"].includes(type))
+        // Log nur 1× pro Nachrichtentyp
+        if (!loggedUnknown.has(type)) {
+          loggedUnknown.add(type);
           console.warn("⚠️ Unbekannter Nachrichtentyp:", type);
+        }
         break;
     }
   });
 
   ws.on("close", () => {
-    const clientId =
-      (userManager.getClientId && userManager.getClientId(ws)) || ws;
-    const username = userManager.getUserName?.(clientId);
-
-    roomManager.leaveRoom?.(clientId);
+    // Socket als ID verwenden
+    roomManager.leaveRoom(ws);
     userManager.removeUser(ws);
     broadcastOnlineList();
-    console.log(`❌ ${username || "Unbekannter Benutzer"} getrennt.`);
+    console.log("❌ Client getrennt.");
   });
 });
+
+const loggedUnknown = new Set();
 
 function broadcastOnlineList() {
   const list = (userManager.getAllUsernames?.() || []).filter(Boolean);
