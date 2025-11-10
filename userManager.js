@@ -63,6 +63,7 @@ export function setUserName(target, username) {
   const clientId = getClientId(target);
   if (!clientId) return false;
   const record = users.get(clientId) || {};
+  // KORREKTUR: Backticks `...` hinzugefügt
   record.username = username || record.username || `Gast-${clientId}`;
   users.set(clientId, record);
   return true;
@@ -83,6 +84,7 @@ export function getUserName(target) {
 export function getOnlineUserNames() {
   const arr = [];
   for (const [id, info] of users.entries()) {
+    // KORREKTUR: Backticks `...` hinzugefügt
     arr.push(info.username || `Gast-${id}`);
   }
   return arr;
