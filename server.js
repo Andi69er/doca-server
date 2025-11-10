@@ -1,5 +1,5 @@
-// server.js — DOCA WebDarts PRO (komplett, copy & paste)
-// Passt zu den gelieferten Modulen: userManager.js, roomManager.js, gameLogic.js
+// server.js — DOCA WebDarts PRO (Render-ready)
+// Uses the above modules. Deploy online (Render).
 
 import express from "express";
 import http from "http";
@@ -12,229 +12,159 @@ import { GameLogic } from "./gameLogic.js";
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
-
 const PORT = process.env.PORT || 10000;
 
-// simple root so Render / health checks succeed
+// health-check for Render
 app.get("/", (req, res) => res.send("✅ DOCA WebDarts Server is running"));
 
 /**
  * Helper: safe JSON parse
  */
 function safeParse(raw) {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
+  try { return JSON.parse(raw); } catch { return null; }
 }
 
 /**
- * Send to a single clientId (if connected via userManager)
+ * Broadcast online list via userManager.broadcast if available
  */
-function sendToClientId(clientId, obj) {
-  try {
-    if (typeof userManager.broadcastToPlayers === "function") {
-      // userManager doesn't expose direct sendToClient in provided file, but
-      // broadcastToPlayers expects playerIds. We'll use broadcastToPlayers for single.
-      userManager.broadcastToPlayers([clientId], obj);
-      return;
-    }
-  } catch (e) {
-    // ignore
+function broadcastOnline() {
+  const names = userManager.getOnlineUserNames ? userManager.getOnlineUserNames() : (userManager.listOnlineUsers ? userManager.listOnlineUsers().map(u=>u.username) : []);
+  const msg = { type: "online_list", users: names };
+  if (typeof userManager.broadcast === "function") userManager.broadcast(msg);
+  else {
+    wss.clients.forEach(c => { if (c.readyState === 1) c.send(JSON.stringify(msg)); });
   }
 }
 
-/**
- * Broadcast online list to all connected clients.
- * userManager.listOnlineUsers() returns array of {id, username}
- */
-function broadcastOnlineList() {
-  let online = [];
-  try {
-    if (typeof userManager.listOnlineUsers === "function") {
-      online = userManager.listOnlineUsers().map(u => u.username ?? u.name ?? String(u.id));
-    }
-  } catch (e) {
-    online = [];
-  }
-  const msg = { type: "online_list", users: online };
-  try {
-    if (typeof userManager.broadcast === "function") {
-      userManager.broadcast(msg);
-      return;
-    }
-  } catch (e) {
-    // fallback: send to all ws clients directly
-    wss.clients.forEach((c) => {
-      try {
-        if (c.readyState === 1) c.send(JSON.stringify(msg));
-      } catch {}
-    });
-  }
-}
-
-// map roomId -> GameLogic instance (keeps game instance per room)
-const games = new Map();
+const games = new Map(); // roomId -> GameLogic
 
 wss.on("connection", (ws) => {
-  console.log("✅ Neuer Client verbunden.");
+  // register immediately with a temporary Gast id
+  const cid = userManager.addUser(ws, "Gast");
+  console.log("✅ Neuer Client verbunden:", cid);
+
+  // send connected ack
+  userManager.sendToClient?.(cid, { type: "connected", clientId: cid, name: userManager.getUserName(cid) });
+  broadcastOnline();
+  roomManager.updateRoomList?.();
 
   ws.on("message", (raw) => {
     const data = safeParse(raw);
     if (!data || !data.type) return;
-    const type = (data.type || "").toString().toLowerCase();
-    const payload = data.payload || data; // support both shapes
+    const type = (data.type || "").toLowerCase();
+    const payload = data;
 
-    // get clientId if userManager supports it
-    const clientId = typeof userManager.getClientId === "function" ? userManager.getClientId(ws) : null;
+    // resolve client id
+    const clientId = userManager.getClientId(ws) || cid;
 
     switch (type) {
-      // ---------------- AUTH / PRESENCE ----------------
-      case "auth":
-      case "login": {
-        const username = payload.user || payload.username || "Gast";
-        if (typeof userManager.addUser === "function") {
-          const id = userManager.addUser(ws, username);
-          // if addUser returned an id but clientId differ, keep id (some UMs return id)
-          // broadcast connected ack
-          sendToClientId(id, { type: "connected", clientId: id, name: username });
-        } else {
-          // fallback: try to call addUser with (ws, username) even if not function (no-op)
-        }
-        broadcastOnlineList();
-        // also send rooms
-        if (typeof roomManager.updateRoomList === "function") roomManager.updateRoomList();
+      case "auth": {
+        const name = payload.user || payload.username || payload.name;
+        if (name) userManager.setUserName(clientId, name);
+        // reply
+        userManager.sendToClient?.(clientId, { type: "connected", clientId, name: userManager.getUserName(clientId) });
+        broadcastOnline();
+        roomManager.updateRoomList?.();
         break;
       }
 
-      case "list_rooms": {
-        if (typeof roomManager.updateRoomList === "function") roomManager.updateRoomList();
+      case "list_rooms":
+        roomManager.updateRoomList?.();
         break;
-      }
 
-      case "list_online": {
-        broadcastOnlineList();
+      case "list_online":
+        broadcastOnline();
         break;
-      }
 
-      // ---------------- ROOM ACTIONS ----------------
       case "create_room": {
-        const name = payload.name || `Raum-${Math.random().toString(36).slice(2,6)}`;
-        const client = clientId || ws;
-        if (typeof roomManager.createRoom === "function") {
-          try {
-            const rid = roomManager.createRoom(client, name, payload.options || {});
-            // reply to creator
-            if (rid && ws.readyState === 1) ws.send(JSON.stringify({ type: "room_created", roomId: rid }));
-          } catch (e) { console.error("create_room error", e); }
-        }
+        const rname = payload.name || `Raum-${Math.random().toString(36).slice(2,5)}`;
+        const rid = roomManager.createRoom(clientId, rname, payload.options || {});
+        // auto-join handled by createRoom
+        roomManager.updateRoomList?.();
         break;
       }
 
       case "join_room": {
         const rid = payload.roomId;
-        const client = clientId || ws;
-        if (!rid) break;
-        if (typeof roomManager.joinRoom === "function") {
-          roomManager.joinRoom(client, rid);
-          // after join, broadcast full room state to players in that room
-          const state = typeof roomManager.getRoomState === "function" ? roomManager.getRoomState(rid) : null;
-          if (state) {
-            // if roomManager.broadcastToPlayers exists, use it
-            if (typeof roomManager.broadcastToPlayers === "function") {
-              roomManager.broadcastToPlayers(state.players, state);
-            } else if (typeof userManager.broadcast === "function") {
-              userManager.broadcast(state);
-            } else {
-              // fallback: send to all ws
-              wss.clients.forEach((c) => {
-                if (c.readyState === 1) c.send(JSON.stringify(state));
-              });
-            }
+        roomManager.joinRoom(clientId, rid);
+        // after join, broadcast room state
+        const state = roomManager.getRoomState?.(rid);
+        if (state) {
+          if (typeof roomManager.broadcastToPlayers === "function") {
+            roomManager.broadcastToPlayers(state.players, state);
+          } else if (typeof userManager.broadcast === "function") {
+            userManager.broadcast(state);
           }
-          if (typeof roomManager.updateRoomList === "function") roomManager.updateRoomList();
         }
+        roomManager.updateRoomList?.();
         break;
       }
 
       case "leave_room": {
-        const client = clientId || ws;
-        if (typeof roomManager.leaveRoom === "function") roomManager.leaveRoom(client);
-        if (typeof roomManager.updateRoomList === "function") roomManager.updateRoomList();
+        roomManager.leaveRoom(clientId);
+        roomManager.updateRoomList?.();
         break;
       }
 
-      // ---------------- CHAT ----------------
-      case "chat_global":
-      case "chat_message": {
-        const client = clientId || ws;
-        const msgText = payload.message || payload.msg || payload;
-        const username = (typeof userManager.getUserName === "function" ? userManager.getUserName(client) : null) || "Gast";
-        const out = { type: "chat_global", user: username, message: msgText };
-        if (typeof userManager.broadcast === "function") {
-          userManager.broadcast(out);
-        } else {
-          wss.clients.forEach((c) => { if (c.readyState === 1) c.send(JSON.stringify(out)); });
-        }
-        break;
-      }
-
-      // ---------------- GAME CONTROL ----------------
       case "start_game": {
-        const client = clientId || ws;
-        const room = typeof roomManager.getRoomByClientId === "function" ? roomManager.getRoomByClientId(client) : null;
+        const room = roomManager.getRoomByClientId?.(clientId);
         if (!room) break;
-        // create GameLogic instance for this room
-        try {
-          const g = new GameLogic(room);
-          g.startGame?.();
-          games.set(room.id, g);
-          const state = typeof roomManager.getRoomState === "function" ? roomManager.getRoomState(room.id) : null;
-          if (state && typeof roomManager.broadcastToPlayers === "function") {
-            roomManager.broadcastToPlayers(state.players, state);
-          }
-        } catch (e) {
-          console.error("start_game error", e);
+        const g = new GameLogic(room);
+        g.start();
+        games.set(room.id, g);
+        const state = g.getState();
+        if (state && typeof roomManager.broadcastToPlayers === "function") {
+          roomManager.broadcastToPlayers(state.players, { type: "game_state", ...state, playerNames: state.players.map(p=>userManager.getUserName(p)) });
         }
         break;
       }
 
-      case "player_throw":
-      case "throw": {
-        const client = clientId || ws;
-        const room = typeof roomManager.getRoomByClientId === "function" ? roomManager.getRoomByClientId(client) : null;
+      case "player_throw": {
+        const points = Number(payload.value ?? payload.points ?? 0) || 0;
+        const room = roomManager.getRoomByClientId?.(clientId);
         if (!room) break;
         const g = games.get(room.id);
         if (!g) break;
-        const value = Number(payload.value || payload.points || 0) || 0;
-        // prefer GameLogic.throwDart or .playerThrow
-        if (typeof g.throwDart === "function") g.throwDart(client, value);
-        else if (typeof g.playerThrow === "function") g.playerThrow(client, value);
-        // broadcast updated game state
-        const state = g.getState ? g.getState() : (typeof roomManager.getRoomState === "function" ? roomManager.getRoomState(room.id) : null);
-        if (state) {
-          if (typeof roomManager.broadcastToPlayers === "function") roomManager.broadcastToPlayers(state.players, state);
-        }
+        g.playerThrow?.(clientId, points) || g.playerThrow(clientId, points);
+        const state = g.getState();
+        if (state) roomManager.broadcastToPlayers?.(state.players, { type: "game_state", ...state, playerNames: state.players.map(p=>userManager.getUserName(p)) });
         break;
       }
 
       case "undo_throw": {
-        const client = clientId || ws;
-        const room = typeof roomManager.getRoomByClientId === "function" ? roomManager.getRoomByClientId(client) : null;
+        const room = roomManager.getRoomByClientId?.(clientId);
         if (!room) break;
         const g = games.get(room.id);
         if (!g) break;
-        if (typeof g.undoLastThrow === "function") g.undoLastThrow(client);
-        const state = g.getState ? g.getState() : null;
-        if (state && typeof roomManager.broadcastToPlayers === "function") roomManager.broadcastToPlayers(state.players, state);
+        g.undoLastThrow?.(clientId);
+        const state = g.getState?.();
+        if (state) roomManager.broadcastToPlayers?.(state.players, { type: "game_state", ...state, playerNames: state.players.map(p=>userManager.getUserName(p)) });
         break;
       }
 
-      // ---------------- LISTEN/HEALTH (frontend compatibility) ----------------
-      case "ping":
-        if (ws.readyState === 1) ws.send(JSON.stringify({ type: "pong" }));
+      case "chat_global": {
+        const text = payload.message || payload.msg || "";
+        const out = { type: "chat_global", user: userManager.getUserName(clientId) || "Gast", message: text };
+        if (typeof userManager.broadcast === "function") userManager.broadcast(out);
+        else wss.clients.forEach(c => { if (c.readyState === 1) c.send(JSON.stringify(out)); });
         break;
+      }
 
       default:
-        // avoid spamming logs for frequent known-but-
+        // ignore noisy repeated types
+        if (!["list_rooms","list_online","ping"].includes(type)) console.warn("⚠️ Unbekannter Nachrichtstyp:", type);
+        break;
+    }
+  });
+
+  ws.on("close", () => {
+    // ensure leave and removal
+    try { roomManager.leaveRoom(clientId); } catch {}
+    try { userManager.removeUser(ws); } catch {}
+    broadcastOnline();
+    roomManager.updateRoomList?.();
+    console.log("❌ Client getrennt:", clientId);
+  });
+});
+
+server.listen(PORT, () => console.log(`🚀 DOCA WebDarts Server läuft auf Port ${PORT}`));
