@@ -2,26 +2,17 @@ import express from "express";
 import http from "http";
 import { WebSocketServer } from "ws";
 
-// ---- Dynamische Kompatibilität für CommonJS und ESModule ----
-import * as roomMod from "./roomManager.js";
-import * as userMod from "./userManager.js";
-import * as gameMod from "./gameLogic.js";
-
-const RoomManager = roomMod.RoomManager || roomMod.default || roomMod;
-const UserManager = userMod.UserManager || userMod.default || userMod;
-const GameLogic = gameMod.GameLogic || gameMod.default || gameMod;
-// -------------------------------------------------------------
+// Deine Module (Funktions-Exports)
+import * as roomManager from "./roomManager.js";
+import * as userManager from "./userManager.js";
+import * as gameLogic from "./gameLogic.js";
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
-
 const PORT = process.env.PORT || 10000;
 
-const roomManager = new RoomManager();
-const userManager = new UserManager();
-const gameLogic = new GameLogic(roomManager, userManager);
-
+// Verbindung WebSocket
 wss.on("connection", (ws) => {
   console.log("✅ Neuer Client verbunden.");
 
@@ -29,7 +20,7 @@ wss.on("connection", (ws) => {
     let data;
     try {
       data = JSON.parse(message);
-    } catch {
+    } catch (err) {
       console.error("❌ Ungültiges JSON:", message);
       return;
     }
@@ -37,69 +28,74 @@ wss.on("connection", (ws) => {
     const { type, payload } = data;
 
     switch (type) {
-      case "login":
+      // Spielerlogin
+      case "login": {
         userManager.addUser(ws, payload.username);
         broadcastOnlineList();
         break;
+      }
 
-      case "logout":
+      // Logout
+      case "logout": {
         userManager.removeUser(ws);
         broadcastOnlineList();
         break;
+      }
 
+      // Raum erstellen
       case "create_room": {
-        const room = roomManager.createRoom(payload.username, payload.mode);
-        ws.send(JSON.stringify({ type: "room_created", payload: { roomId: room.id } }));
+        const clientId = userManager.getClientId(ws);
+        const roomId = roomManager.createRoom(clientId, payload.username, payload.options);
+        ws.send(JSON.stringify({ type: "room_created", payload: { roomId } }));
         break;
       }
 
+      // Raum beitreten
       case "join_room": {
-        const { roomId, username } = payload;
-        const room = roomManager.getRoom(roomId);
+        const clientId = userManager.getClientId(ws);
+        const { roomId } = payload;
+        roomManager.joinRoom(clientId, roomId);
 
-        if (!room) {
-          ws.send(JSON.stringify({ type: "error", payload: { message: "Raum nicht gefunden." } }));
-          return;
+        // Nach dem Beitritt: beide Spieler synchronisieren
+        const state = roomManager.getRoomState(roomId);
+        if (state) {
+          roomManager.updateRoomList();
+          userManager.broadcastToRoom?.(roomId, state);
         }
 
-        roomManager.addPlayerToRoom(roomId, ws, username);
-
-        const players = roomManager.getPlayersInRoom(roomId).map(p => p.username);
-
-        roomManager.broadcastToRoom(roomId, {
-          type: "room_update",
-          payload: { roomId, players, status: "waiting" }
-        });
-
-        console.log(`👥 Spieler ${username} ist Raum ${roomId} beigetreten.`);
+        console.log(`👥 ${userManager.getUserName(clientId)} ist Raum ${roomId} beigetreten.`);
         break;
       }
 
+      // Chatnachricht
       case "chat_message": {
-        const { roomId, username, message: msg } = payload;
-        roomManager.broadcastToRoom(roomId, {
+        const clientId = userManager.getClientId(ws);
+        const { roomId, message: msg } = payload;
+        roomManager.broadcastToPlayers(roomManager.getRoomByClientId(clientId)?.players || [], {
           type: "chat_message",
-          payload: { username, message: msg }
+          payload: { username: userManager.getUserName(clientId), message: msg },
         });
         break;
       }
 
+      // Spiel starten
       case "start_game": {
         const { roomId } = payload;
-        const room = roomManager.getRoom(roomId);
-        if (room) {
-          room.gameActive = true;
-          roomManager.broadcastToRoom(roomId, {
+        const state = roomManager.getRoomState(roomId);
+        if (state) {
+          roomManager.broadcastToPlayers(state.players, {
             type: "game_started",
-            payload: { roomId }
+            payload: { roomId },
           });
         }
         break;
       }
 
-      case "score_input":
+      // Punkte eingeben
+      case "score_input": {
         gameLogic.handleScoreInput(payload);
         break;
+      }
 
       default:
         console.warn("⚠️ Unbekannter Nachrichtentyp:", type);
@@ -108,18 +104,22 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
-    const username = userManager.getUsernameBySocket(ws);
+    const username = userManager.getUserName(userManager.getClientId(ws));
+    const clientId = userManager.getClientId(ws);
+
+    // Entferne Spieler
+    roomManager.leaveRoom(clientId);
     userManager.removeUser(ws);
-    roomManager.removePlayerFromAllRooms(ws);
     broadcastOnlineList();
+
     console.log(`❌ ${username || "Unbekannter Benutzer"} getrennt.`);
   });
 });
 
 function broadcastOnlineList() {
-  const online = userManager.getAllUsernames();
-  const msg = JSON.stringify({ type: "online_list", payload: online });
-  wss.clients.forEach(client => {
+  const list = userManager.getAllUsernames?.() || [];
+  const msg = JSON.stringify({ type: "online_list", payload: list });
+  wss.clients.forEach((client) => {
     if (client.readyState === 1) client.send(msg);
   });
 }
