@@ -1,5 +1,5 @@
-// server.js — DOCA WebDarts PRO (Render-ready, fixed clientId scope)
-// Vollständige Version für Deploy auf Render.
+// server.js — DOCA WebDarts PRO (Render-ready, fixed clientId scope 2)
+// Endgültige stabile Version
 
 import express from "express";
 import http from "http";
@@ -14,7 +14,7 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 const PORT = process.env.PORT || 10000;
 
-// health-check for Render
+// Render health check
 app.get("/", (req, res) => res.send("✅ DOCA WebDarts Server is running"));
 
 function safeParse(raw) {
@@ -37,18 +37,14 @@ function broadcastOnline() {
 const games = new Map(); // roomId -> GameLogic
 
 wss.on("connection", (ws) => {
-  // 🔹 clientId global im Handler deklarieren, damit close() ihn kennt
-  let clientId = null;
+  // 🔹 clientId im ws-Objekt speichern, damit immer verfügbar
+  ws.clientId = userManager.addUser(ws, "Gast");
+  console.log("✅ Neuer Client verbunden:", ws.clientId);
 
-  // register immediately with a temporary Gast id
-  clientId = userManager.addUser(ws, "Gast");
-  console.log("✅ Neuer Client verbunden:", clientId);
-
-  // send connected ack
-  userManager.sendToClient?.(clientId, {
+  userManager.sendToClient?.(ws.clientId, {
     type: "connected",
-    clientId,
-    name: userManager.getUserName(clientId)
+    clientId: ws.clientId,
+    name: userManager.getUserName(ws.clientId)
   });
   broadcastOnline();
   roomManager.updateRoomList?.();
@@ -59,8 +55,8 @@ wss.on("connection", (ws) => {
     const type = (data.type || "").toLowerCase();
     const payload = data;
 
-    // resolve client id
-    clientId = userManager.getClientId(ws) || clientId;
+    // resolve id erneut, falls nötig
+    const clientId = ws.clientId || userManager.getClientId(ws);
 
     switch (type) {
       case "auth": {
@@ -182,6 +178,7 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
+    const clientId = ws.clientId; // 🔹 jetzt sicher vorhanden
     try { roomManager.leaveRoom(clientId); } catch {}
     try { userManager.removeUser(ws); } catch {}
     broadcastOnline();
