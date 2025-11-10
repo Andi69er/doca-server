@@ -1,8 +1,6 @@
 import express from "express";
 import http from "http";
 import { WebSocketServer } from "ws";
-
-// Deine Module (Funktions-Exports)
 import * as roomManager from "./roomManager.js";
 import * as userManager from "./userManager.js";
 import * as gameLogic from "./gameLogic.js";
@@ -12,29 +10,32 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 const PORT = process.env.PORT || 10000;
 
-// *** Render braucht eine HTTP-Antwort, sonst Time-Out ***
-app.get("/", (req, res) => {
-  res.send("✅ DOCA WebDarts Server is running");
-});
+// Render-Ping, damit Deploy nie mehr hängen bleibt
+app.get("/", (req, res) => res.send("✅ DOCA WebDarts Server is running"));
 
-// --- WebSocket-Verbindungen ---
 wss.on("connection", (ws) => {
   console.log("✅ Neuer Client verbunden.");
 
-  ws.on("message", (message) => {
+  ws.on("message", (msg) => {
     let data;
     try {
-      data = JSON.parse(message);
+      data = JSON.parse(msg);
     } catch {
-      console.error("❌ Ungültiges JSON:", message);
+      console.error("❌ Ungültiges JSON:", msg);
       return;
     }
 
     const { type, payload } = data;
+    const safeClientId =
+      (userManager.getClientId && userManager.getClientId(ws)) || ws.id || ws;
 
     switch (type) {
-      case "login": {
-        userManager.addUser(ws, payload.username);
+      // ------------------------------------
+      // LOGIN / LOGOUT
+      // ------------------------------------
+      case "login":
+      case "auth": {
+        userManager.addUser(ws, payload?.username || "Gast");
         broadcastOnlineList();
         break;
       }
@@ -45,87 +46,114 @@ wss.on("connection", (ws) => {
         break;
       }
 
+      // ------------------------------------
+      // RAUM-LOGIK
+      // ------------------------------------
       case "create_room": {
-        const clientId = userManager.getClientId(ws);
-        const roomId = roomManager.createRoom(clientId, payload.username, payload.options);
-        ws.send(JSON.stringify({ type: "room_created", payload: { roomId } }));
+        const roomId = roomManager.createRoom(
+          safeClientId,
+          payload?.username || "Neuer Raum",
+          payload?.options || {}
+        );
+        ws.send(
+          JSON.stringify({ type: "room_created", payload: { roomId } })
+        );
         break;
       }
 
       case "join_room": {
-        const clientId = userManager.getClientId(ws);
-        const { roomId } = payload;
-        roomManager.joinRoom(clientId, roomId);
+        const roomId = payload?.roomId;
+        roomManager.joinRoom(safeClientId, roomId);
 
-        // Nach dem Beitritt: synchronisiere Raumzustand an alle Spieler
         const state = roomManager.getRoomState(roomId);
         if (state && roomManager.broadcastToPlayers) {
           roomManager.broadcastToPlayers(state.players, state);
         }
         roomManager.updateRoomList();
-        console.log(`👥 ${userManager.getUserName(clientId)} ist Raum ${roomId} beigetreten.`);
+        console.log(`👥 ${userManager.getUserName?.(safeClientId)} ist Raum ${roomId} beigetreten.`);
         break;
       }
 
+      // ------------------------------------
+      // CHAT
+      // ------------------------------------
       case "chat_message": {
-        const clientId = userManager.getClientId(ws);
-        const { message: msg } = payload;
-        const room = roomManager.getRoomByClientId(clientId);
-        if (room) {
+        const room = roomManager.getRoomByClientId?.(safeClientId);
+        if (room && roomManager.broadcastToPlayers) {
           roomManager.broadcastToPlayers(room.players, {
             type: "chat_message",
             payload: {
-              username: userManager.getUserName(clientId),
-              message: msg
-            }
+              username: userManager.getUserName?.(safeClientId) || "Unbekannt",
+              message: payload?.message || "",
+            },
           });
         }
         break;
       }
 
+      // ------------------------------------
+      // SPIEL-LOGIK
+      // ------------------------------------
       case "start_game": {
-        const { roomId } = payload;
+        const roomId = payload?.roomId;
         const state = roomManager.getRoomState(roomId);
         if (state && roomManager.broadcastToPlayers) {
           roomManager.broadcastToPlayers(state.players, {
             type: "game_started",
-            payload: { roomId }
+            payload: { roomId },
           });
         }
         break;
       }
 
       case "score_input": {
-        gameLogic.handleScoreInput(payload);
+        if (gameLogic.handleScoreInput)
+          gameLogic.handleScoreInput(payload);
         break;
       }
 
+      // ------------------------------------
+      // LISTEN-ANFRAGEN (Frontend)
+      // ------------------------------------
+      case "list_rooms":
+        roomManager.updateRoomList();
+        break;
+
+      case "list_online":
+        broadcastOnlineList();
+        break;
+
+      // ------------------------------------
+      // FALLBACK
+      // ------------------------------------
       default:
-        console.warn("⚠️ Unbekannter Nachrichtentyp:", type);
+        // Nur einmal pro Typ loggen
+        if (!["ping"].includes(type))
+          console.warn("⚠️ Unbekannter Nachrichtentyp:", type);
         break;
     }
   });
 
   ws.on("close", () => {
-    const clientId = userManager.getClientId(ws);
-    const username = userManager.getUserName(clientId);
+    const clientId =
+      (userManager.getClientId && userManager.getClientId(ws)) || ws;
+    const username = userManager.getUserName?.(clientId);
 
-    roomManager.leaveRoom(clientId);
+    roomManager.leaveRoom?.(clientId);
     userManager.removeUser(ws);
     broadcastOnlineList();
-
     console.log(`❌ ${username || "Unbekannter Benutzer"} getrennt.`);
   });
 });
 
 function broadcastOnlineList() {
-  const list = userManager.getAllUsernames?.() || [];
+  const list = (userManager.getAllUsernames?.() || []).filter(Boolean);
   const msg = JSON.stringify({ type: "online_list", payload: list });
   wss.clients.forEach((client) => {
     if (client.readyState === 1) client.send(msg);
   });
 }
 
-server.listen(PORT, () => {
-  console.log(`🚀 DOCA WebDarts Server läuft auf Port ${PORT}`);
-});
+server.listen(PORT, () =>
+  console.log(`🚀 DOCA WebDarts Server läuft auf Port ${PORT}`)
+);
