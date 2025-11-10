@@ -73,7 +73,9 @@ export class GameLogic {
       scores: { ...this.scores },
       isStarted: this.isStarted,
       currentPlayerId: this.players[this.currentPlayerIndex] ?? null,
-      winner: this.winner
+      winner: this.winner,
+      // HINZUGEFÜGT: Stellt die Raum-Optionen für den Client bereit
+      options: this.room.options || {} 
     };
   }
 }
