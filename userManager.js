@@ -1,118 +1,82 @@
-// userManager.js — DOCA WebDarts PRO
-// Vollständige Datei — Copy & Paste
+// userManager.js — DOCA WebDarts PRO (final, robust, copy & paste)
 
-globalThis.clients = {};       // clientId -> ws
-globalThis.userNames = {};     // clientId -> username
-globalThis.userRooms = {};     // clientId -> roomId
-globalThis.cleanupTimers = {}; // clientId -> timeoutId
+const clients = new Map(); // clientId -> WebSocket
+const users = new Map();   // clientId -> { username }
+const sockets = new WeakMap(); // ws -> clientId
 
 /**
- * Register a new WebSocket client and return its clientId.
+ * Neuen Benutzer hinzufügen.
  */
-export function registerClient(ws) {
-  const id = Math.random().toString(36).substring(2, 8);
-  globalThis.clients[id] = ws;
-  globalThis.userNames[id] = "Gast-" + id;
-  return id;
+export function addUser(ws, username = "Gast") {
+  const clientId = Math.random().toString(36).substring(2, 8);
+  clients.set(clientId, ws);
+  users.set(clientId, { username });
+  sockets.set(ws, clientId);
+  return clientId;
 }
 
 /**
- * Set or change a client's username.
+ * Benutzer entfernen.
  */
-export function setUserName(clientId, name) {
-  if (!clientId || !name) return;
-  globalThis.userNames[clientId] = name;
-}
-
-/**
- * Remove a client from internal maps (immediate).
- */
-export function removeClient(clientId) {
+export function removeUser(ws) {
+  const clientId = sockets.get(ws);
   if (!clientId) return;
-  delete globalThis.clients[clientId];
-  delete globalThis.userNames[clientId];
-  // userRooms is managed by room manager; keep as-is here
-  if (globalThis.cleanupTimers[clientId]) {
-    clearTimeout(globalThis.cleanupTimers[clientId]);
-    delete globalThis.cleanupTimers[clientId];
-  }
+  clients.delete(clientId);
+  users.delete(clientId);
+  sockets.delete(ws);
 }
 
 /**
- * Get a username by clientId.
+ * Client-ID zu WebSocket.
+ */
+export function getClientId(ws) {
+  return sockets.get(ws) || null;
+}
+
+/**
+ * Benutzername anhand ID.
  */
 export function getUserName(clientId) {
-  return globalThis.userNames[clientId] ?? null;
+  return users.get(clientId)?.username || "Unbekannt";
 }
 
 /**
- * Find a clientId by username (returns first match or null)
+ * Broadcast an alle verbundenen Clients.
  */
-export function findClientIdByName(username) {
-  if (!username) return null;
-  for (const id in globalThis.userNames) {
-    if (globalThis.userNames[id] === username) return id;
-  }
-  return null;
-}
-
-/**
- * Return an array of online user names (deduplicated).
- * Includes guests unless you want to hide them.
- */
-export function getOnlineUserNames() {
-  const arr = Object.values(globalThis.userNames || {});
-  // dedupe preserving order
-  const seen = new Set();
-  const out = [];
-  for (const n of arr) {
-    if (!seen.has(n)) {
-      seen.add(n);
-      out.push(n);
+export function broadcast(message) {
+  const data = JSON.stringify(message);
+  for (const ws of clients.values()) {
+    try {
+      ws.send(data);
+    } catch (e) {
+      console.error("Broadcast error:", e);
     }
   }
-  return out;
 }
 
 /**
- * Broadcast a JSONable object to all connected clients.
+ * Nur an bestimmte Spieler senden.
  */
-export function broadcast(obj) {
-  try {
-    const msg = JSON.stringify(obj);
-    for (const ws of Object.values(globalThis.clients)) {
-      if (ws && ws.readyState === ws.OPEN) {
-        ws.send(msg);
+export function broadcastToPlayers(playerIds, message) {
+  const data = JSON.stringify(message);
+  for (const pid of playerIds) {
+    const ws = clients.get(pid);
+    if (ws && ws.readyState === ws.OPEN) {
+      try {
+        ws.send(data);
+      } catch (e) {
+        console.error("Send error:", e);
       }
     }
-  } catch (e) {
-    console.error("broadcast error", e);
   }
 }
 
 /**
- * Send an object to a list of player clientIds (if connected).
+ * Aktive Benutzerliste holen.
  */
-export function broadcastToPlayers(playerIds, obj) {
-  if (!obj || !Array.isArray(playerIds)) return;
-  const msg = JSON.stringify(obj);
-  playerIds.forEach((id) => {
-    const ws = globalThis.clients[id];
-    if (ws && ws.readyState === ws.OPEN) {
-      ws.send(msg);
-    }
-  });
-}
-
-/**
- * Send directly to a single client.
- */
-export function sendToClient(clientId, obj) {
-  const ws = globalThis.clients[clientId];
-  if (!ws) return;
-  try {
-    ws.send(JSON.stringify(obj));
-  } catch (e) {
-    console.error("sendToClient error", e);
-  }
+export function listOnlineUsers() {
+  return Array.from(users.entries()).map(([id, u]) => ({
+    id,
+    username: u.username
+  }));
 }
