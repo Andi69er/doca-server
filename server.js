@@ -204,23 +204,54 @@ function broadcastOnline() {
   } catch (e) {}
 }
 
-app.get("/", (req, res) => { res.type("text/plain").send("DOCA WebDarts Server is running"); });
-app.get("/status", (req, res) => { res.json({ status: "ok", clients: wss.clients.size, rooms: typeof roomManager.getRoomState === "function" ? "available" : "unknown" }); });
+// --- HTTP routes ---
+app.get("/", (req, res) => {
+  res.type("text/plain").send("DOCA WebDarts Server is running");
+});
+
+app.get("/status", (req, res) => {
+  res.json({
+    status: "ok",
+    clients: wss.clients.size,
+    rooms: typeof roomManager.getRoomState === "function" ? "available" : "unknown"
+  });
+});
+
+// --- DEBUG ROUTE ---
 app.get("/debug-ws", (req, res) => {
   try {
     const users = userManager.listOnlineUsers?.() || [];
     const roomList = roomManager.listRooms?.() || [];
-    const activeGames = Array.from(games.entries()).map(([id, g]) => ({ roomId: id, state: g.getState?.() || {} }));
-    res.json({ time: new Date().toISOString(), totalClients: wss.clients.size, users, rooms: roomList, games: activeGames });
-  } catch (e) { res.status(500).json({ error: e.message || e }); }
+    const activeGames = Array.from(games.entries()).map(([id, g]) => ({
+      roomId: id,
+      state: g.getState?.() || {}
+    }));
+    res.json({
+      time: new Date().toISOString(),
+      totalClients: wss.clients.size,
+      users,
+      rooms: roomList,
+      games: activeGames
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message || e });
+  }
 });
 
+// --- SHUTDOWN ---
 function shutdown() {
   console.log("Shutting down WebSocket server...");
   clearInterval(interval);
-  wss.close(() => { server.close(() => { console.log("Server closed"); process.exit(0); }); });
+  wss.close(() => {
+    server.close(() => {
+      console.log("Server closed");
+      process.exit(0);
+    });
+  });
 }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
-server.listen(PORT, () => { console.log(`🚀 DOCA WebDarts Server läuft auf Port ${PORT}`); });
+server.listen(PORT, () => {
+  console.log(`🚀 DOCA WebDarts Server läuft auf Port ${PORT}`);
+});
