@@ -134,7 +134,8 @@ wss.on("connection", (ws) => {
           const players = state.players || [];
           roomManager.broadcastToPlayers?.(players, { type: "game_state", ...state, playerNames: players.map(p => userManager.getUserName(p)) });
         }
-        userManager.sendToClient?.(uid,.sendToClient?.(uid, { type: "action_result", action: "undo_throw", ok: !!ok });
+        // KORREKTUR: Die Zeile wurde repariert und der doppelte Aufruf entfernt.
+        userManager.sendToClient?.(uid, { type: "action_result", action: "undo_throw", ok: !!ok });
         break;
       }
 
@@ -158,7 +159,7 @@ wss.on("connection", (ws) => {
   ws.on("close", () => {
     roomManager.leaveRoom?.(ws.clientId);
     userManager.removeUser?.(ws);
-    broadcastOnline();
+broadcastOnline();
     roomManager.updateRoomList?.();
     console.log("❌ Client getrennt:", ws.clientId);
   });
