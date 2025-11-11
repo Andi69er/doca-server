@@ -1,5 +1,6 @@
 // server.js — DOCA WebDarts (final, with /debug-ws)
-// Korrigierte Variante: benutzt userManager.broadcastToPlayers für room/game broadcasts
+// Robustere Variante mit Debug-Logging und Resend-Fallbacks
+
 import express from "express";
 import http from "http";
 import { WebSocketServer } from "ws";
@@ -22,15 +23,15 @@ function safeParse(raw) {
 function heartbeat() { this.isAlive = true; }
 function noop() {}
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
   const clientId = userManager.addUser(ws, "Gast");
   ws.clientId = clientId;
   ws.isAlive = true;
   ws.on("pong", heartbeat);
 
-  console.log("✅ Neuer Client verbunden:", clientId);
+  console.log(`[WS] ➕ connect ${clientId} (${req?.socket?.remoteAddress || 'unknown'})`);
 
-  // send connected to the client (name may be "Gast" until auth)
+  // initial connected message (may be "Gast" until auth)
   userManager.sendToClient?.(clientId, {
     type: "connected",
     clientId,
@@ -42,23 +43,30 @@ wss.on("connection", (ws) => {
 
   ws.on("message", (raw) => {
     const data = safeParse(raw);
-    if (!data || !data.type) return;
+    if (!data || !data.type) {
+      console.warn("[WS] Ungültige Nachricht:", raw);
+      return;
+    }
     const type = (data.type || "").toLowerCase();
     const payload = data.payload || data;
     const uid = userManager.getClientId(ws) || ws.clientId;
+
+    console.log(`[WS] ← ${uid} : ${type}`, payload && Object.keys(payload).length ? payload : "");
 
     switch (type) {
       case "auth": {
         const name = payload.user || payload.username || payload.name;
         if (name) {
           userManager.setUserName(uid, name);
-          // confirm to the client
           userManager.sendToClient?.(uid, { type: "connected", clientId: uid, name: userManager.getUserName(uid) });
-          // If user is already in a room, send updated room_state to that room
+          console.log(`[AUTH] ${uid} -> ${userManager.getUserName(uid)}`);
+
+          // If user is already in a room, push updated room state to that room
           const room = roomManager.getRoomByClientId?.(uid);
           if (room) {
             const state = roomManager.getRoomState?.(room.id);
             if (state) {
+              console.log(`[AUTH] user ${uid} is in room ${room.id} — sending updated room_state`);
               userManager.broadcastToPlayers?.(state.players, state);
             }
           }
@@ -80,6 +88,7 @@ wss.on("connection", (ws) => {
         const rname = payload.name || `Raum-${Math.random().toString(36).slice(2,5)}`;
         const rid = roomManager.createRoom(uid, rname, payload.options || {});
         userManager.sendToClient?.(uid, { type: "room_created", roomId: rid, name: rname });
+        console.log(`[ROOM] ${uid} created room ${rid} (${rname})`);
         roomManager.updateRoomList?.();
         break;
       }
@@ -90,16 +99,32 @@ wss.on("connection", (ws) => {
           userManager.sendToClient?.(uid, { type: "error", message: "missing roomId" });
           break;
         }
+
+        console.log(`[ROOM] ${uid} requests join ${rid}`);
+
         const ok = roomManager.joinRoom(uid, rid);
         userManager.sendToClient?.(uid, { type: "joined_room", roomId: rid, ok: !!ok });
 
         if (ok) {
           const roomState = roomManager.getRoomState?.(rid);
           if (roomState) {
-            // <-- WICHTIG: userManager.broadcastToPlayers benutzen (nicht roomManager)
+            // send immediately
+            console.log(`[ROOM] broadcasting room_state for ${rid} -> players: ${roomState.players.join(",")}`);
             userManager.broadcastToPlayers?.(roomState.players, roomState);
+
+            // resend shortly after (race condition mitigation)
+            setTimeout(() => {
+              try {
+                const rs2 = roomManager.getRoomState?.(rid);
+                if (rs2) {
+                  console.log(`[ROOM] resend room_state for ${rid}`);
+                  userManager.broadcastToPlayers?.(rs2.players, rs2);
+                }
+              } catch(e) { console.warn("[ROOM] resend failed", e); }
+            }, 200);
           }
 
+          // if a game exists, send its state too
           const game = games.get(rid);
           if (game) {
             const gameState = game.getState?.();
@@ -112,26 +137,33 @@ wss.on("connection", (ws) => {
               });
             }
           }
+        } else {
+          console.warn(`[ROOM] joinRoom returned false for ${uid} -> ${rid}`);
         }
+
         roomManager.updateRoomList?.();
         break;
       }
 
       case "leave_room":
+        console.log(`[ROOM] ${uid} leave request`);
         roomManager.leaveRoom(uid);
         roomManager.updateRoomList?.();
         break;
 
       case "start_game": {
         const room = roomManager.getRoomByClientId?.(uid);
-        if (!room) break;
+        if (!room) {
+          console.warn(`[GAME] start_game by ${uid} — no room`);
+          break;
+        }
         const g = new GameLogic(room);
         g.start();
         games.set(room.id, g);
         const state = g.getState?.();
         if (state) {
           const players = state.players || [];
-          // <-- userManager.broadcastToPlayers
+          console.log(`[GAME] started in ${room.id} -> broadcasting game_state`);
           userManager.broadcastToPlayers?.(players, { type: "game_state", ...state, playerNames: players.map(p => userManager.getUserName(p)) });
         }
         break;
@@ -140,14 +172,13 @@ wss.on("connection", (ws) => {
       case "player_throw": {
         const points = Number(payload.value ?? payload.points ?? payload) || 0;
         const room = roomManager.getRoomByClientId?.(uid);
-        if (!room) break;
+        if (!room) { console.warn(`[THROW] ${uid} not in room`); break; }
         const g = games.get(room.id);
-        if (!g) break;
+        if (!g) { console.warn(`[THROW] no game for room ${room.id}`); break; }
         const ok = g.playerThrow?.(uid, points);
         const state = g.getState?.();
         if (state) {
           const players = state.players || [];
-          // <-- userManager.broadcastToPlayers
           userManager.broadcastToPlayers?.(players, { type: "game_state", ...state, playerNames: players.map(p => userManager.getUserName(p)) });
         }
         userManager.sendToClient?.(uid, { type: "action_result", action: "player_throw", ok: !!ok });
@@ -163,7 +194,6 @@ wss.on("connection", (ws) => {
         const state = g.getState?.();
         if (state) {
           const players = state.players || [];
-          // <-- userManager.broadcastToPlayers
           userManager.broadcastToPlayers?.(players, { type: "game_state", ...state, playerNames: players.map(p => userManager.getUserName(p)) });
         }
         userManager.sendToClient?.(uid, { type: "action_result", action: "undo_throw", ok: !!ok });
@@ -188,11 +218,11 @@ wss.on("connection", (ws) => {
   });
 
   ws.on("close", () => {
+    console.log(`[WS] ❌ disconnect ${ws.clientId}`);
     roomManager.leaveRoom?.(ws.clientId);
     userManager.removeUser?.(ws);
     broadcastOnline();
     roomManager.updateRoomList?.();
-    console.log("❌ Client getrennt:", ws.clientId);
   });
 
   ws.on("error", (err) => {
@@ -217,7 +247,7 @@ function broadcastOnline() {
           : []);
     const msg = { type: "online_list", users: names };
     userManager.broadcast?.(msg);
-  } catch (e) {}
+  } catch (e) { console.warn("[broadcastOnline] err", e); }
 }
 
 // --- HTTP routes ---
@@ -237,7 +267,10 @@ app.get("/status", (req, res) => {
 app.get("/debug-ws", (req, res) => {
   try {
     const users = userManager.listOnlineUsers?.() || [];
-    const roomList = roomManager.listRooms?.() || [];
+    // roomManager.listRooms may not exist; try to create friendly view:
+    const rooms = (() => {
+      try { return roomManager.listRooms?.() || Array.from(roomManager.getRoomState ? [] : []).map(() => ({})); } catch { return []; }
+    })();
     const activeGames = Array.from(games.entries()).map(([id, g]) => ({
       roomId: id,
       state: g.getState?.() || {}
@@ -246,7 +279,7 @@ app.get("/debug-ws", (req, res) => {
       time: new Date().toISOString(),
       totalClients: wss.clients.size,
       users,
-      rooms: roomList,
+      rooms,
       games: activeGames
     });
   } catch (e) {
