@@ -1,81 +1,60 @@
-// gameLogic.js — simple, but robust X01 game logic
-// Exports GameLogic class
+// ======================================================
+// Spiel-Logik (DOCA WebDarts PRO)
+// ======================================================
 
-export class GameLogic {
-  constructor(room) {
-    this.room = room;
-    this.players = Array.isArray(room.players) ? room.players.slice() : [];
-    this.currentPlayerIndex = 0;
-    this.scores = {};
-    this.isStarted = false;
-    this.winner = null;
-    this.turnHistory = []; // for undo
-    this.reset();
+import { getRoomByClientId } from "./roomManager.js";
+import { broadcastToPlayers } from "./userManager.js";
+
+export function handleGameMessage(clientId, data) {
+  const room = getRoomByClientId(clientId);
+  if (!room) return;
+
+  switch (data.action) {
+    case "start_game":
+      startGame(room);
+      break;
+
+    case "throw":
+      handleThrow(room, clientId, data.score);
+      break;
+
+    default:
+      broadcastToPlayers(room.players, data);
   }
+}
 
-  reset() {
-    const dist = parseInt(this.room.options?.distance) || 501;
-    for (const p of this.players) this.scores[p] = dist;
-    this.currentPlayerIndex = 0;
-    this.winner = null;
-    this.isStarted = false;
-    this.turnHistory = [];
-  }
+function startGame(room) {
+  room.game = {
+    active: true,
+    scores: {},
+    startTime: Date.now(),
+  };
 
-  start() {
-    this.isStarted = true;
-    this.currentPlayerIndex = 0;
-  }
+  room.players.forEach((pid) => (room.game.scores[pid] = 501));
 
-  playerThrow(playerId, points = 0) {
-    points = Number(points) || 0;
-    if (!this.isStarted || this.winner) return false;
-    const current = this.players[this.currentPlayerIndex];
-    if (current !== playerId) return false;
+  broadcastToPlayers(room.players, {
+    type: "game_started",
+    scores: room.game.scores,
+  });
+}
 
-    // Save for undo
-    this.turnHistory.push({
-      playerId,
-      points,
-      prevScore: this.scores[playerId],
-      time: Date.now()
+function handleThrow(room, clientId, score) {
+  if (!room.game?.active) return;
+
+  const newScore = Math.max(0, (room.game.scores[clientId] ?? 501) - score);
+  room.game.scores[clientId] = newScore;
+
+  broadcastToPlayers(room.players, {
+    type: "score_update",
+    player: clientId,
+    score: newScore,
+  });
+
+  if (newScore === 0) {
+    room.game.active = false;
+    broadcastToPlayers(room.players, {
+      type: "game_won",
+      winner: clientId,
     });
-
-    // Apply points
-    this.scores[playerId] -= points;
-    if (this.scores[playerId] <= 0) {
-      this.scores[playerId] = 0;
-      this.winner = playerId;
-      this.isStarted = false;
-    } else {
-      // next player
-      this.currentPlayerIndex = (this.currentPlayerIndex + 1) % this.players.length;
-    }
-    return true;
-  }
-
-  undoLastThrow() {
-    if (!this.turnHistory.length) return false;
-    const last = this.turnHistory.pop();
-    if (!last) return false;
-    this.scores[last.playerId] = last.prevScore;
-    this.winner = null;
-    this.isStarted = true;
-    // attempt to restore turn index to that player
-    const idx = this.players.indexOf(last.playerId);
-    if (idx >= 0) this.currentPlayerIndex = idx;
-    return true;
-  }
-
-  getState() {
-    return {
-      players: this.players.slice(),
-      scores: { ...this.scores },
-      isStarted: this.isStarted,
-      currentPlayerId: this.players[this.currentPlayerIndex] ?? null,
-      winner: this.winner,
-      // HINZUGEFÜGT: Stellt die Raum-Optionen für den Client bereit
-      options: this.room.options || {} 
-    };
   }
 }

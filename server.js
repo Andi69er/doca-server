@@ -1,276 +1,148 @@
-// server.js — DOCA WebDarts (final, hardened for Render)
-// Full file — replace your existing server.js with this.
+// ======================================================
+// DOCA WebDarts Server - by Andi69er & ChatGPT
+// ======================================================
 
-import express from "express";
-import http from "http";
-import { WebSocketServer } from "ws";
-import * as userManager from "./userManager.js";
-import * as roomManager from "./roomManager.js";
-import { GameLogic } from "./gameLogic.js";
-
-const PORT = process.env.PORT || 10000;
-
-// Safety: make uncaught problems visible in logs so Render doesn't silently restart
-process.on('uncaughtException', (err) => {
-  console.error('UNCAUGHT EXCEPTION:', err && (err.stack || err.message || err));
-  // Allow logs to flush. We don't force-exit here to give Render the chance to restart gracefully.
-});
-
-process.on('unhandledRejection', (reason, p) => {
-  console.error('UNHANDLED REJECTION at:', p, 'reason:', reason);
-});
-
-process.on('exit', (code) => {
-  console.log('Process exit event with code:', code);
-});
+const express = require("express");
+const http = require("http");
+const WebSocket = require("ws");
+const cors = require("cors");
 
 const app = express();
+app.use(cors());
+app.use(express.json());
+
+// Server & WebSocket Setup
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, clientTracking: true });
+const wss = new WebSocket.Server({ server });
 
-const games = new Map();
+// --- Data Structures ---
+const clients = new Map(); // clientId -> ws
+const users = {}; // username -> clientId
+const rooms = {}; // roomId -> {name, players[], options}
 
-function safeParse(raw) {
-  try { return JSON.parse(raw); } catch { return null; }
+// --- Helper Functions ---
+function send(ws, data) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(data));
+  }
 }
 
-function heartbeat() { this.isAlive = true; }
-function noop() {}
-
-wss.on("connection", (ws) => {
-  const clientId = userManager.addUser(ws, "Gast");
-  ws.clientId = clientId;
-  ws.isAlive = true;
-  ws.on("pong", heartbeat);
-
-  console.log("✅ Neuer Client verbunden:", clientId);
-
-  userManager.sendToClient?.(clientId, {
-    type: "connected",
-    clientId,
-    name: userManager.getUserName(clientId)
+function broadcastRoom(roomId, data) {
+  const room = rooms[roomId];
+  if (!room) return;
+  room.players.forEach((username) => {
+    const id = users[username];
+    const ws = clients.get(id);
+    send(ws, data);
   });
+}
 
-  broadcastOnline();
-  roomManager.updateRoomList?.();
+// --- WebSocket Handling ---
+wss.on("connection", (ws, req) => {
+  const id = Math.random().toString(36).substring(2, 9);
+  clients.set(id, ws);
+  console.log(`[WS] ➕ connect ${id} (${req.socket.remoteAddress})`);
 
-  ws.on("message", (raw) => {
-    const data = safeParse(raw);
-    if (!data || !data.type) return;
-    const type = (data.type || "").toLowerCase();
-    const payload = data.payload || data;
-    const uid = userManager.getClientId(ws) || ws.clientId;
+  ws.on("message", (msg) => {
+    let data;
+    try {
+      data = JSON.parse(msg);
+    } catch {
+      return console.error("[WS] ❌ Invalid JSON:", msg);
+    }
 
-    switch (type) {
-      case "auth": {
-        const name = payload.user || payload.username || payload.name;
-        if (name) userManager.setUserName(uid, name);
-        userManager.sendToClient?.(uid, { type: "connected", clientId: uid, name: userManager.getUserName(uid) });
-        broadcastOnline();
-        roomManager.updateRoomList?.();
+    switch (data.type) {
+      case "auth":
+        users[data.user] = id;
+        ws.username = data.user;
+        console.log(`[AUTH] ${id} -> ${data.user}`);
+        send(ws, { type: "auth_ok", user: data.user });
         break;
-      }
+
+      case "create_room":
+        const roomId = Math.random().toString(36).substring(2, 9);
+        rooms[roomId] = {
+          name: data.name,
+          players: [ws.username],
+          options: data.options,
+        };
+        console.log(`[ROOM] ${id} created room ${roomId} (${data.name})`);
+        broadcastAllRooms();
+        send(ws, { type: "room_created", roomId });
+        break;
+
+      case "join_room":
+        if (!rooms[data.roomId]) return;
+        const room = rooms[data.roomId];
+        if (!room.players.includes(ws.username)) {
+          room.players.push(ws.username);
+        }
+        broadcastRoom(data.roomId, {
+          type: "player_joined",
+          players: room.players,
+        });
+        broadcastAllRooms();
+        break;
+
+      case "leave_room":
+        Object.keys(rooms).forEach((rid) => {
+          const r = rooms[rid];
+          if (r.players.includes(ws.username)) {
+            r.players = r.players.filter((p) => p !== ws.username);
+            if (r.players.length === 0) delete rooms[rid];
+          }
+        });
+        broadcastAllRooms();
+        break;
 
       case "list_rooms":
-        roomManager.updateRoomList?.();
+        send(ws, { type: "room_list", rooms });
         break;
 
       case "list_online":
-        broadcastOnline();
+        send(ws, { type: "online_list", users: Object.keys(users) });
         break;
 
-      case "create_room": {
-        const rname = payload.name || `Raum-${Math.random().toString(36).slice(2,5)}`;
-        const rid = roomManager.createRoom(uid, rname, payload.options || {});
-        userManager.sendToClient?.(uid, { type: "room_created", roomId: rid, name: rname });
-        roomManager.updateRoomList?.();
-        break;
-      }
-
-      case "join_room": {
-        const rid = payload.roomId || payload.id || payload.room;
-        if (!rid) {
-          userManager.sendToClient?.(uid, { type: "error", message: "missing roomId" });
-          break;
-        }
-        const ok = roomManager.joinRoom(uid, rid);
-        userManager.sendToClient?.(uid, { type: "joined_room", roomId: rid, ok: !!ok });
-
-        if (ok) {
-          const roomState = roomManager.getRoomState?.(rid);
-          if (roomState) {
-            roomManager.broadcastToPlayers?.(roomState.players, roomState);
-          }
-
-          const game = games.get(rid);
-          if (game) {
-            const gameState = game.getState?.();
-            if (gameState) {
-              const players = gameState.players || [];
-              roomManager.broadcastToPlayers?.(players, {
-                type: "game_state",
-                ...gameState,
-                playerNames: players.map(p => userManager.getUserName(p))
-              });
-            }
-          }
-        }
-        roomManager.updateRoomList?.();
-        break;
-      }
-
-      case "leave_room":
-        roomManager.leaveRoom(uid);
-        roomManager.updateRoomList?.();
-        break;
-
-      case "start_game": {
-        const room = roomManager.getRoomByClientId?.(uid);
-        if (!room) break;
-        const g = new GameLogic(room);
-        g.start();
-        games.set(room.id, g);
-        const state = g.getState?.();
-        if (state) {
-          const players = state.players || [];
-          roomManager.broadcastToPlayers?.(players, { type: "game_state", ...state, playerNames: players.map(p => userManager.getUserName(p)) });
-        }
-        break;
-      }
-
-      case "player_throw": {
-        const points = Number(payload.value ?? payload.points ?? payload) || 0;
-        const room = roomManager.getRoomByClientId?.(uid);
-        if (!room) break;
-        const g = games.get(room.id);
-        if (!g) break;
-        const ok = g.playerThrow?.(uid, points);
-        const state = g.getState?.();
-        if (state) {
-          const players = state.players || [];
-          roomManager.broadcastToPlayers?.(players, { type: "game_state", ...state, playerNames: players.map(p => userManager.getUserName(p)) });
-        }
-        userManager.sendToClient?.(uid, { type: "action_result", action: "player_throw", ok: !!ok });
-        break;
-      }
-
-      case "undo_throw": {
-        const room = roomManager.getRoomByClientId?.(uid);
-        if (!room) break;
-        const g = games.get(room.id);
-        if (!g) break;
-        const ok = g.undoLastThrow?.();
-        const state = g.getState?.();
-        if (state) {
-          const players = state.players || [];
-          roomManager.broadcastToPlayers?.(players, { type: "game_state", ...state, playerNames: players.map(p => userManager.getUserName(p)) });
-        }
-        userManager.sendToClient?.(uid, { type: "action_result", action: "undo_throw", ok: !!ok });
-        break;
-      }
-
-      case "chat_global": {
-        const text = payload.message || payload.msg || payload.text || "";
-        const out = { type: "chat_global", user: userManager.getUserName(uid) || "Gast", message: text };
-        userManager.broadcast?.(out);
-        break;
-      }
-
-      case "ping":
-        userManager.sendToClient?.(uid, { type: "pong" });
+      case "game_action":
+        if (data.roomId) broadcastRoom(data.roomId, data);
         break;
 
       default:
-        userManager.sendToClient?.(uid, { type: "error", message: `unknown type ${type}` });
-        break;
+        console.log("[WS] ⚠️ Unbekannter Typ:", data.type);
     }
   });
 
   ws.on("close", () => {
-    roomManager.leaveRoom?.(ws.clientId);
-    userManager.removeUser?.(ws);
-    broadcastOnline();
-    roomManager.updateRoomList?.();
-    console.log("❌ Client getrennt:", ws.clientId);
-  });
+    console.log(`[WS] ❌ disconnect ${id}`);
+    clients.delete(id);
 
-  ws.on("error", (err) => {
-    console.warn("WS error for", ws.clientId, err?.message || err);
+    if (ws.username) {
+      delete users[ws.username];
+      Object.keys(rooms).forEach((rid) => {
+        const r = rooms[rid];
+        if (r.players.includes(ws.username)) {
+          r.players = r.players.filter((p) => p !== ws.username);
+          if (r.players.length === 0) delete rooms[rid];
+        }
+      });
+      broadcastAllRooms();
+    }
   });
 });
 
-const interval = setInterval(() => {
-  wss.clients.forEach((ws) => {
-    if (ws.isAlive === false) return ws.terminate();
-    ws.isAlive = false;
-    ws.ping(noop);
-  });
-}, 30000);
-
-function broadcastOnline() {
-  try {
-    const names = (typeof userManager.getOnlineUserNames === "function")
-      ? userManager.getOnlineUserNames()
-      : (typeof userManager.listOnlineUsers === "function"
-          ? userManager.listOnlineUsers().map(u => u.username)
-          : []);
-    const msg = { type: "online_list", users: names };
-    userManager.broadcast?.(msg);
-  } catch (e) {
-    console.error("broadcastOnline error:", e);
-  }
+function broadcastAllRooms() {
+  const data = { type: "room_list", rooms };
+  clients.forEach((ws) => send(ws, data));
 }
 
-// --- HTTP routes ---
+// --- Express Test Route ---
 app.get("/", (req, res) => {
-  res.type("text/plain").send("DOCA WebDarts Server is running");
+  res.send("✅ DOCA WebDarts Server läuft erfolgreich!");
 });
 
-app.get("/status", (req, res) => {
-  res.json({
-    status: "ok",
-    clients: wss.clients.size,
-    rooms: typeof roomManager.getRoomState === "function" ? "available" : "unknown"
-  });
-});
-
-// --- DEBUG ROUTE ---
-app.get("/debug-ws", (req, res) => {
-  try {
-    const users = userManager.listOnlineUsers?.() || [];
-    const roomList = roomManager.listRooms?.() || [];
-    const activeGames = Array.from(games.entries()).map(([id, g]) => ({
-      roomId: id,
-      state: g.getState?.() || {}
-    }));
-    res.json({
-      time: new Date().toISOString(),
-      totalClients: wss.clients.size,
-      users,
-      rooms: roomList,
-      games: activeGames
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message || e });
-  }
-});
-
-// --- SHUTDOWN ---
-function shutdown() {
-  console.log("Shutting down WebSocket server...");
-  clearInterval(interval);
-  wss.close(() => {
-    server.close(() => {
-      console.log("Server closed");
-      // keep the process exit to make sure platform restarts cleanly
-      process.exit(0);
-    });
-  });
-}
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
-
-// Bind to 0.0.0.0 to ensure platform sees the listening port
-server.listen(PORT, '0.0.0.0', () => {
+// --- Server Start ---
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 DOCA WebDarts Server läuft auf Port ${PORT}`);
+  console.log("🌐 Bereit unter: https://doca-server.onrender.com");
 });
