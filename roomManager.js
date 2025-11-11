@@ -1,14 +1,12 @@
-// roomManager.js
+// roomManager.js (FINAL, reparierte Version)
 
 import { getUserName, broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
-import Game from "./game.js"; // Import der neuen Game-Klasse
+import Game from "./game.js";
 
 const rooms = new Map(); // roomId -> Room-Objekt
 const userRooms = new Map(); // clientId -> roomId
 
-const GRACE_PERIOD_MS = 30000; // 30 Sekunden, bevor ein leerer Raum gelöscht wird
-
-// Funktion zum Senden der aktualisierten Raumliste an alle Benutzer
+// Sendet die aktualisierte Raumliste an die Lobby (alle verbundenen Clients)
 function broadcastRoomList() {
     const roomList = Array.from(rooms.values()).map(room => ({
         id: room.id,
@@ -21,17 +19,20 @@ function broadcastRoomList() {
     broadcast({ type: "room_update", rooms: roomList });
 }
 
-// Kombinierte Funktion, die den gesamten Zustand eines Raumes (inkl. Spiel) zurückgibt
-export function getRoomState(room) {
-    const gameState = room.game ? room.game.getState() : null;
+// Stellt den kompletten Zustand eines Raumes zusammen (Spieler, Namen, Spielstand etc.)
+function getFullRoomState(room) {
+    const gameState = room.game ? room.game.getState() : {};
     return {
-        type: "game_state", // Ein einziger Nachrichtentyp für den gesamten Zustand
-        roomId: room.id,
+        type: "room_state", // Wir verwenden diesen Typ, um die gesamte Raum- und Spielinfo zu bündeln
+        id: room.id,
         name: room.name,
         ownerId: room.ownerId,
         players: room.players,
-        playerNames: room.players.map(pId => getUserName(pId)),
-        ...gameState // Fügt die Spieldaten hinzu
+        playerNames: room.players.map(pId => getUserName(pId) || `Gast-${pId}`),
+        maxPlayers: room.maxPlayers,
+        options: room.options,
+        // Fasse die Spiel-Daten hier zusammen
+        ...gameState
     };
 }
 
@@ -40,26 +41,24 @@ export function createRoom(clientId, name = "Neuer Raum", options = {}) {
         sendToClient(clientId, { type: "error", message: "Du bist bereits in einem Raum." });
         return;
     }
-
     const roomId = Math.random().toString(36).slice(2, 9);
     const room = {
         id: roomId,
         name: name || `Raum von ${getUserName(clientId)}`,
         ownerId: clientId,
-        players: [], // Spieler wird erst beim Join hinzugefügt
+        players: [clientId], // Der Ersteller ist sofort der erste Spieler
         maxPlayers: 2,
         options: options,
-        createdAt: Date.now(),
-        game: null,
-        cleanupTimer: null,
+        game: null, // Das Spiel wird erst bei Start erstellt
     };
-
     rooms.set(roomId, room);
-    console.log(`Raum erstellt: ${room.name} (${roomId}) von ${getUserName(clientId)}`);
+    userRooms.set(clientId, roomId);
+    console.log(`Raum erstellt: ${room.name} (${roomId}) durch ${getUserName(clientId)}`);
     
-    // Den Ersteller direkt dem Raum beitreten lassen
-    sendToClient(clientId, { type: "room_created", roomId: roomId });
-    joinRoom(clientId, roomId);
+    // Sende den initialen Zustand an den Ersteller
+    sendToClient(clientId, getFullRoomState(room));
+    // Informiere die Lobby über den neuen Raum
+    broadcastRoomList();
 }
 
 export function joinRoom(clientId, roomId) {
@@ -68,11 +67,6 @@ export function joinRoom(clientId, roomId) {
         sendToClient(clientId, { type: "error", message: "Raum nicht gefunden." });
         return;
     }
-
-    if (userRooms.has(clientId) && userRooms.get(clientId) !== roomId) {
-        leaveRoom(clientId, false); 
-    }
-
     if (room.players.length >= room.maxPlayers && !room.players.includes(clientId)) {
         sendToClient(clientId, { type: "error", message: "Der Raum ist voll." });
         return;
@@ -82,48 +76,44 @@ export function joinRoom(clientId, roomId) {
         room.players.push(clientId);
     }
     userRooms.set(clientId, roomId);
-
-    if (room.cleanupTimer) {
-        clearTimeout(room.cleanupTimer);
-        room.cleanupTimer = null;
-    }
-
-    const roomState = getRoomState(room);
-    broadcastToPlayers(room.players, roomState); 
-    sendToClient(clientId, { type: "joined_room", ok: true, roomId: roomId });
     
+    console.log(`${getUserName(clientId)} ist dem Raum ${room.name} beigetreten.`);
+
+    // **DER ENTSCHEIDENDE FIX:** Sende den neuen, kompletten Zustand an ALLE Spieler im Raum
+    broadcastToPlayers(room.players, getFullRoomState(room));
+    
+    // Informiere die Lobby, dass sich die Spielerzahl geändert hat
     broadcastRoomList();
 }
 
-export function leaveRoom(clientId, doBroadcast = true) {
+export function leaveRoom(clientId) {
     const roomId = userRooms.get(clientId);
     if (!roomId) return;
-
     const room = rooms.get(roomId);
     userRooms.delete(clientId);
 
     if (room) {
-        room.players = room.players.filter(pId => pId !== clientId);
-        console.log(`${getUserName(clientId)} hat den Raum ${room.name} verlassen`);
+        const remainingPlayers = room.players.filter(pId => pId !== clientId);
+        room.players = remainingPlayers;
 
-        if (room.players.length === 0) {
-            room.cleanupTimer = setTimeout(() => {
-                rooms.delete(roomId);
-                console.log(`Leerer Raum ${roomId} wurde gelöscht.`);
-                broadcastRoomList();
-            }, GRACE_PERIOD_MS);
+        if (remainingPlayers.length === 0) {
+            // Wenn der Raum leer ist, wird er nach 30 Sekunden gelöscht
+            setTimeout(() => {
+                if (room.players.length === 0) {
+                    rooms.delete(roomId);
+                    console.log(`Leerer Raum ${roomId} wurde gelöscht.`);
+                    broadcastRoomList();
+                }
+            }, 30000);
         } else {
+            // Es sind noch Spieler da. Update senden.
             if (room.ownerId === clientId) {
-                room.ownerId = room.players[0];
+                room.ownerId = remainingPlayers[0]; // Der nächste Spieler wird Host
             }
-            const roomState = getRoomState(room);
-            broadcastToPlayers(room.players, roomState);
+            broadcastToPlayers(remainingPlayers, getFullRoomState(room));
         }
     }
-
-    if (doBroadcast) {
-        broadcastRoomList();
-    }
+    broadcastRoomList();
 }
 
 export function getRoomByClientId(clientId) {
@@ -135,15 +125,12 @@ export function startGame(clientId) {
     const room = getRoomByClientId(clientId);
     if (room && room.ownerId === clientId) {
         if (room.players.length < 2) {
-             sendToClient(clientId, { type: "error", message: "Nicht genügend Spieler zum Starten." });
+             sendToClient(clientId, { type: "error", message: "Warte auf Gegner..." });
              return;
         }
         room.game = new Game(room.players, room.options);
-        const roomState = getRoomState(room);
-        broadcastToPlayers(room.players, roomState);
+        broadcastToPlayers(room.players, getFullRoomState(room));
         broadcastRoomList();
-    } else if (room) {
-        sendToClient(clientId, { type: "error", message: "Nur der Host kann das Spiel starten." });
     }
 }
 
@@ -152,10 +139,7 @@ export function handleGameAction(clientId, action) {
     if (room && room.game) {
         const stateChanged = room.game.handleAction(clientId, action);
         if (stateChanged) {
-            const roomState = getRoomState(room);
-            broadcastToPlayers(room.players, roomState);
-        } else {
-             sendToClient(clientId, { type: "error", message: "Ungültige Spielaktion." });
+            broadcastToPlayers(room.players, getFullRoomState(room));
         }
     }
 }
