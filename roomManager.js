@@ -1,111 +1,161 @@
-// ======================================================
-// Raumverwaltung (DOCA WebDarts PRO)
-// ======================================================
+// roomManager.js
 
-import { getUserName, broadcast, broadcastToPlayers, getClientId } from "./userManager.js";
+import { getUserName, broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
+import Game from "./game.js"; // Import der neuen Game-Klasse
 
-const rooms = new Map();
-const userRooms = new Map();
-const cleanupTimers = new Map();
-const GRACE_MS = 30 * 1000;
+const rooms = new Map(); // roomId -> Room-Objekt
+const userRooms = new Map(); // clientId -> roomId
 
-function makeRoomState(room) {
-  return {
-    type: "room_state",
-    id: room.id,
-    name: room.name,
-    ownerId: room.ownerId,
-    players: room.players.slice(),
-    playerNames: room.players.map((p) => getUserName(p) || "Gast"),
-    options: room.options || {},
-    maxPlayers: room.maxPlayers,
-    createdAt: room.createdAt,
-  };
+const GRACE_PERIOD_MS = 30000; // 30 Sekunden, bevor ein leerer Raum gelöscht wird
+
+// Funktion zum Senden der aktualisierten Raumliste an alle Benutzer
+function broadcastRoomList() {
+    const roomList = Array.from(rooms.values()).map(room => ({
+        id: room.id,
+        name: room.name,
+        owner: getUserName(room.ownerId),
+        playerCount: room.players.length,
+        maxPlayers: room.maxPlayers,
+        isStarted: !!room.game && room.game.isStarted,
+    }));
+    broadcast({ type: "room_update", rooms: roomList });
+}
+
+// Kombinierte Funktion, die den gesamten Zustand eines Raumes (inkl. Spiel) zurückgibt
+export function getRoomState(room) {
+    const gameState = room.game ? room.game.getState() : null;
+    return {
+        type: "game_state", // Ein einziger Nachrichtentyp für den gesamten Zustand
+        roomId: room.id,
+        name: room.name,
+        ownerId: room.ownerId,
+        players: room.players,
+        playerNames: room.players.map(pId => getUserName(pId)),
+        ...gameState // Fügt die Spieldaten hinzu
+    };
 }
 
 export function createRoom(clientId, name = "Neuer Raum", options = {}) {
-  if (!clientId) return null;
-  if (userRooms.has(clientId)) return userRooms.get(clientId);
+    if (userRooms.has(clientId)) {
+        sendToClient(clientId, { type: "error", message: "Du bist bereits in einem Raum." });
+        return;
+    }
 
-  const id = Math.random().toString(36).slice(2, 9);
-  const room = {
-    id,
-    name,
-    ownerId: clientId,
-    players: [clientId],
-    options,
-    maxPlayers: 2,
-    createdAt: Date.now(),
-  };
+    const roomId = Math.random().toString(36).slice(2, 9);
+    const room = {
+        id: roomId,
+        name: name || `Raum von ${getUserName(clientId)}`,
+        ownerId: clientId,
+        players: [], // Spieler wird erst beim Join hinzugefügt
+        maxPlayers: 2,
+        options: options,
+        createdAt: Date.now(),
+        game: null,
+        cleanupTimer: null,
+    };
 
-  rooms.set(id, room);
-  userRooms.set(clientId, id);
-
-  if (cleanupTimers.has(id)) {
-    clearTimeout(cleanupTimers.get(id));
-    cleanupTimers.delete(id);
-  }
-
-  broadcastToPlayers([clientId], makeRoomState(room));
-  updateRoomList();
-  return id;
+    rooms.set(roomId, room);
+    console.log(`Raum erstellt: ${room.name} (${roomId}) von ${getUserName(clientId)}`);
+    
+    // Den Ersteller direkt dem Raum beitreten lassen
+    sendToClient(clientId, { type: "room_created", roomId: roomId });
+    joinRoom(clientId, roomId);
 }
 
 export function joinRoom(clientId, roomId) {
-  if (!clientId) return false;
-  const room = rooms.get(roomId);
-  if (!room) return false;
+    const room = rooms.get(roomId);
+    if (!room) {
+        sendToClient(clientId, { type: "error", message: "Raum nicht gefunden." });
+        return;
+    }
 
-  if (room.players.includes(clientId)) return true;
-  if (room.players.length >= room.maxPlayers) return false;
+    if (userRooms.has(clientId) && userRooms.get(clientId) !== roomId) {
+        leaveRoom(clientId, false); 
+    }
 
-  const prev = userRooms.get(clientId);
-  if (prev && prev !== roomId) leaveRoom(clientId);
+    if (room.players.length >= room.maxPlayers && !room.players.includes(clientId)) {
+        sendToClient(clientId, { type: "error", message: "Der Raum ist voll." });
+        return;
+    }
 
-  room.players.push(clientId);
-  userRooms.set(clientId, roomId);
+    if (!room.players.includes(clientId)) {
+        room.players.push(clientId);
+    }
+    userRooms.set(clientId, roomId);
 
-  const updated = makeRoomState(room);
-  broadcastToPlayers(room.players, updated);
-  updateRoomList();
-  return true;
+    if (room.cleanupTimer) {
+        clearTimeout(room.cleanupTimer);
+        room.cleanupTimer = null;
+    }
+
+    const roomState = getRoomState(room);
+    broadcastToPlayers(room.players, roomState); 
+    sendToClient(clientId, { type: "joined_room", ok: true, roomId: roomId });
+    
+    broadcastRoomList();
 }
 
-export function leaveRoom(clientId) {
-  const rid = userRooms.get(clientId);
-  if (!rid) return;
-  const room = rooms.get(rid);
-  if (!room) return;
+export function leaveRoom(clientId, doBroadcast = true) {
+    const roomId = userRooms.get(clientId);
+    if (!roomId) return;
 
-  room.players = room.players.filter((p) => p !== clientId);
-  userRooms.delete(clientId);
+    const room = rooms.get(roomId);
+    userRooms.delete(clientId);
 
-  if (room.players.length === 0) {
-    const t = setTimeout(() => {
-      if (room.players.length === 0) rooms.delete(rid);
-      updateRoomList();
-    }, GRACE_MS);
-    cleanupTimers.set(rid, t);
-  } else {
-    broadcastToPlayers(room.players, makeRoomState(room));
-  }
+    if (room) {
+        room.players = room.players.filter(pId => pId !== clientId);
+        console.log(`${getUserName(clientId)} hat den Raum ${room.name} verlassen`);
 
-  updateRoomList();
+        if (room.players.length === 0) {
+            room.cleanupTimer = setTimeout(() => {
+                rooms.delete(roomId);
+                console.log(`Leerer Raum ${roomId} wurde gelöscht.`);
+                broadcastRoomList();
+            }, GRACE_PERIOD_MS);
+        } else {
+            if (room.ownerId === clientId) {
+                room.ownerId = room.players[0];
+            }
+            const roomState = getRoomState(room);
+            broadcastToPlayers(room.players, roomState);
+        }
+    }
+
+    if (doBroadcast) {
+        broadcastRoomList();
+    }
 }
 
 export function getRoomByClientId(clientId) {
-  const rid = userRooms.get(clientId);
-  return rid ? rooms.get(rid) : null;
+    const roomId = userRooms.get(clientId);
+    return roomId ? rooms.get(roomId) : null;
 }
 
-export function updateRoomList() {
-  const list = Array.from(rooms.values()).map((r) => ({
-    id: r.id,
-    name: r.name,
-    owner: getUserName(r.ownerId) || "Gast",
-    playerCount: r.players.length,
-    maxPlayers: r.maxPlayers,
-    options: r.options || {},
-  }));
-  broadcast({ type: "room_update", rooms: list });
+export function startGame(clientId) {
+    const room = getRoomByClientId(clientId);
+    if (room && room.ownerId === clientId) {
+        if (room.players.length < 2) {
+             sendToClient(clientId, { type: "error", message: "Nicht genügend Spieler zum Starten." });
+             return;
+        }
+        room.game = new Game(room.players, room.options);
+        const roomState = getRoomState(room);
+        broadcastToPlayers(room.players, roomState);
+        broadcastRoomList();
+    } else if (room) {
+        sendToClient(clientId, { type: "error", message: "Nur der Host kann das Spiel starten." });
+    }
+}
+
+export function handleGameAction(clientId, action) {
+    const room = getRoomByClientId(clientId);
+    if (room && room.game) {
+        const stateChanged = room.game.handleAction(clientId, action);
+        if (stateChanged) {
+            const roomState = getRoomState(room);
+            broadcastToPlayers(room.players, roomState);
+        } else {
+             sendToClient(clientId, { type: "error", message: "Ungültige Spielaktion." });
+        }
+    }
 }
