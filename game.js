@@ -56,17 +56,13 @@ export default class Game {
 
         // Bust-Logik (überworfen)
         if (newScore < 0 || newScore === 1) {
-            // Beim Bust wird der Spielstand zurückgesetzt und der nächste Spieler ist dran.
-            // In einer echten Implementierung müsste man den Score der Runde zurücksetzen.
-            // Der Einfachheit halber wechseln wir hier nur den Spieler.
             this.nextPlayer();
             return true;
         }
         
         // Checkout-Logik
         if (newScore === 0) {
-            // Hier müsste noch die "Double Out"-Bedingung geprüft werden, was komplexer ist.
-            // Fürs Erste akzeptieren wir jeden Wurf, der auf 0 führt.
+            // Für eine vollständige Implementierung müsste hier die "Double Out"-Bedingung geprüft werden.
             this.scores[clientId] = 0;
             this.winner = clientId;
             console.log(`Spiel gewonnen von ${clientId}`);
