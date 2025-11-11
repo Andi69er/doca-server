@@ -1,13 +1,9 @@
-// game.js
+// game.js (FINAL)
 
 export default class Game {
     constructor(players, options) {
-        this.players = players; // Array mit clientIds
-        this.options = {
-            startingScore: 501,
-            finishType: "Double Out",
-            ...options
-        };
+        this.players = players;
+        this.options = { startingScore: 501, ...options };
         this.isStarted = true;
         this.winner = null;
         this.currentPlayerIndex = 0;
@@ -18,60 +14,47 @@ export default class Game {
         });
     }
 
-    getCurrentPlayerId() {
-        return this.players[this.currentPlayerIndex];
-    }
-
     getState() {
         return {
             isStarted: this.isStarted,
             winner: this.winner,
             scores: this.scores,
-            currentPlayerId: this.getCurrentPlayerId(),
+            currentPlayerId: this.players[this.currentPlayerIndex],
             turnThrows: this.turnThrows,
-            options: this.options,
         };
     }
 
     handleAction(clientId, action) {
-        if (this.winner) return false;
+        if (this.winner || clientId !== this.players[this.currentPlayerIndex]) return false;
 
         switch (action.type) {
             case "player_throw":
-                // Das 'payload' Objekt wird vom Client in ws.js so verschickt
-                return this.handleThrow(clientId, action.payload.points);
+                return this.handleThrow(action.payload.points);
             case "undo_throw":
-                return this.handleUndo(clientId);
+                return this.handleUndo();
             default:
                 return false;
         }
     }
 
-    handleThrow(clientId, points) {
-        if (clientId !== this.getCurrentPlayerId()) return false;
+    handleThrow(points) {
         if (typeof points !== 'number' || points < 0 || points > 180) return false;
+        const clientId = this.players[this.currentPlayerIndex];
+        const newScore = this.scores[clientId] - points;
 
-        const currentScore = this.scores[clientId];
-        const newScore = currentScore - points;
-
-        // Bust-Logik (überworfen)
-        if (newScore < 0 || newScore === 1) {
+        if (newScore < 0 || newScore === 1) { // Bust
             this.nextPlayer();
             return true;
         }
         
-        // Checkout-Logik
+        this.scores[clientId] = newScore;
+        this.turnThrows.push(points);
+
         if (newScore === 0) {
-            // Für eine vollständige Implementierung müsste hier die "Double Out"-Bedingung geprüft werden.
-            this.scores[clientId] = 0;
             this.winner = clientId;
             console.log(`Spiel gewonnen von ${clientId}`);
             return true;
         }
-
-        // Gültiger Wurf
-        this.scores[clientId] = newScore;
-        this.turnThrows.push(points);
 
         if (this.turnThrows.length >= 3) {
             this.nextPlayer();
@@ -79,10 +62,9 @@ export default class Game {
         return true;
     }
     
-    handleUndo(clientId) {
-        if (clientId !== this.getCurrentPlayerId()) return false;
+    handleUndo() {
         if (this.turnThrows.length === 0) return false;
-        
+        const clientId = this.players[this.currentPlayerIndex];
         const lastThrow = this.turnThrows.pop();
         this.scores[clientId] += lastThrow;
         return true;

@@ -1,4 +1,4 @@
-// server.js
+// server.js (FINAL)
 
 import express from "express";
 import http from "http";
@@ -9,18 +9,18 @@ import { WebSocketServer } from "ws";
 import * as userManager from "./userManager.js";
 import * as roomManager from "./roomManager.js";
 
-const PORT = process.env.PORT || 10000;
+// Import der spezifischen Broadcast-Funktionen
+import { broadcastOnlineList } from "./userManager.js";
+import { broadcastRoomList } from "./roomManager.js";
 
-// Server-Setup
+const PORT = process.env.PORT || 10000;
 const app = express();
 app.use(cors());
-app.use(express.json());
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
 console.log("🚀 Initialisierung des DOCA WebDarts Servers...");
 
-// WebSocket-Verbindungshandler
 wss.on("connection", (ws) => {
     const clientId = userManager.addUser(ws);
     console.log(`✅ Neuer Client verbunden: ${clientId}`);
@@ -36,23 +36,22 @@ wss.on("connection", (ws) => {
 
         console.log(`[${clientId}] ->`, data);
 
-        // Leitet die Nachricht an den entsprechenden Handler weiter
         switch (data.type) {
             // Benutzer- & Lobby-Verwaltung
             case "auth":
-                // Der Client (ws.js) sendet das payload-Objekt
                 userManager.authenticate(clientId, data.payload.username);
                 break;
             case "chat_global":
-            case "chat": {
+            case "chat":
                 const username = userManager.getUserName(clientId) || "Gast";
-                userManager.broadcast({
-                    type: "chat_global",
-                    user: username,
-                    message: data.message || data.payload?.message
-                });
+                userManager.broadcast({ type: "chat_global", user: username, message: data.message || data.payload?.message });
                 break;
-            }
+            case "list_rooms":
+                broadcastRoomList();
+                break;
+            case "list_online":
+                broadcastOnlineList();
+                break;
 
             // Raum-Verwaltung
             case "create_room":
@@ -77,7 +76,6 @@ wss.on("connection", (ws) => {
             case "ping":
                 userManager.sendToClient(clientId, { type: "pong" });
                 break;
-
             default:
                 console.warn(`⚠️ Unbekannter Nachrichtentyp: ${data.type}`);
         }
@@ -85,8 +83,7 @@ wss.on("connection", (ws) => {
 
     ws.on("close", () => {
         console.log(`❌ Client hat die Verbindung getrennt: ${clientId}`);
-        // Das Verlassen des Raumes muss vor dem Entfernen des Benutzers erfolgen,
-        // damit wir seinen Benutzernamen noch für Benachrichtigungen abrufen können.
+        // Wichtig: Zuerst den Raum verlassen (um den Namen noch zu haben), dann den Benutzer entfernen.
         roomManager.leaveRoom(clientId);
         userManager.removeUser(clientId);
     });
