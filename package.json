@@ -1,23 +1,14 @@
 {
-  "name": "doca-webdarts-server",
+  "name": "doca-server",
   "version": "1.0.0",
-  "description": "DOCA WebDarts PRO Server (Render-ready)",
   "main": "server.js",
-  "type": "module",
+  "type": "commonjs",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
+    "start": "node server.js"
   },
-  "author": "DOCA",
-  "license": "MIT",
   "dependencies": {
     "express": "^4.19.2",
-    "ws": "^8.18.0"
-  },
-  "devDependencies": {
-    "nodemon": "^3.1.0"
-  },
-  "engines": {
-    "node": ">=18.x"
+    "ws": "^8.17.0",
+    "cors": "^2.8.5"
   }
 }
