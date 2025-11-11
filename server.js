@@ -1,148 +1,88 @@
 // ======================================================
-// DOCA WebDarts Server - by Andi69er & ChatGPT
+// DOCA WebDarts Server – Render-kompatible Version (ESM)
 // ======================================================
 
-const express = require("express");
-const http = require("http");
-const WebSocket = require("ws");
-const cors = require("cors");
+import express from "express";
+import http from "http";
+import { WebSocketServer } from "ws";
+import cors from "cors";
+
+import { createRoom, joinRoom, leaveRoom, updateRoomList, getRoomByClientId } from "./roomManager.js";
+import { getUserName, registerUser, removeUser, broadcast } from "./userManager.js";
+import { handleGameMessage } from "./gameLogic.js";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Server & WebSocket Setup
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocketServer({ server });
 
-// --- Data Structures ---
-const clients = new Map(); // clientId -> ws
-const users = {}; // username -> clientId
-const rooms = {}; // roomId -> {name, players[], options}
+console.log("===================================================");
+console.log("🚀 Starte DOCA WebDarts PRO Server...");
+console.log("===================================================");
 
-// --- Helper Functions ---
-function send(ws, data) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(data));
-  }
-}
-
-function broadcastRoom(roomId, data) {
-  const room = rooms[roomId];
-  if (!room) return;
-  room.players.forEach((username) => {
-    const id = users[username];
-    const ws = clients.get(id);
-    send(ws, data);
-  });
-}
-
-// --- WebSocket Handling ---
 wss.on("connection", (ws, req) => {
-  const id = Math.random().toString(36).substring(2, 9);
-  clients.set(id, ws);
-  console.log(`[WS] ➕ connect ${id} (${req.socket.remoteAddress})`);
+  const clientId = Math.random().toString(36).slice(2, 9);
+  ws.id = clientId;
+  registerUser(ws, clientId);
+
+  console.log(`[WS] ➕ Client verbunden: ${clientId} (${req.socket.remoteAddress})`);
 
   ws.on("message", (msg) => {
     let data;
     try {
       data = JSON.parse(msg);
     } catch {
-      return console.error("[WS] ❌ Invalid JSON:", msg);
+      console.error("[WS] ❌ Ungültige Nachricht:", msg);
+      return;
     }
 
     switch (data.type) {
       case "auth":
-        users[data.user] = id;
-        ws.username = data.user;
-        console.log(`[AUTH] ${id} -> ${data.user}`);
-        send(ws, { type: "auth_ok", user: data.user });
+        ws.username = data.user || "Gast";
+        console.log(`[AUTH] ${clientId} -> ${ws.username}`);
         break;
 
       case "create_room":
-        const roomId = Math.random().toString(36).substring(2, 9);
-        rooms[roomId] = {
-          name: data.name,
-          players: [ws.username],
-          options: data.options,
-        };
-        console.log(`[ROOM] ${id} created room ${roomId} (${data.name})`);
-        broadcastAllRooms();
-        send(ws, { type: "room_created", roomId });
+        createRoom(clientId, data.name, data.options);
         break;
 
       case "join_room":
-        if (!rooms[data.roomId]) return;
-        const room = rooms[data.roomId];
-        if (!room.players.includes(ws.username)) {
-          room.players.push(ws.username);
-        }
-        broadcastRoom(data.roomId, {
-          type: "player_joined",
-          players: room.players,
-        });
-        broadcastAllRooms();
+        joinRoom(clientId, data.roomId);
         break;
 
       case "leave_room":
-        Object.keys(rooms).forEach((rid) => {
-          const r = rooms[rid];
-          if (r.players.includes(ws.username)) {
-            r.players = r.players.filter((p) => p !== ws.username);
-            if (r.players.length === 0) delete rooms[rid];
-          }
-        });
-        broadcastAllRooms();
+        leaveRoom(clientId);
         break;
 
       case "list_rooms":
-        send(ws, { type: "room_list", rooms });
-        break;
-
-      case "list_online":
-        send(ws, { type: "online_list", users: Object.keys(users) });
+        updateRoomList();
         break;
 
       case "game_action":
-        if (data.roomId) broadcastRoom(data.roomId, data);
+        handleGameMessage(clientId, data);
         break;
 
       default:
-        console.log("[WS] ⚠️ Unbekannter Typ:", data.type);
+        console.log("[WS] ⚠️ Unbekannter Nachrichtentyp:", data.type);
     }
   });
 
   ws.on("close", () => {
-    console.log(`[WS] ❌ disconnect ${id}`);
-    clients.delete(id);
-
-    if (ws.username) {
-      delete users[ws.username];
-      Object.keys(rooms).forEach((rid) => {
-        const r = rooms[rid];
-        if (r.players.includes(ws.username)) {
-          r.players = r.players.filter((p) => p !== ws.username);
-          if (r.players.length === 0) delete rooms[rid];
-        }
-      });
-      broadcastAllRooms();
-    }
+    console.log(`[WS] ❌ Client getrennt: ${clientId}`);
+    removeUser(clientId);
+    leaveRoom(clientId);
   });
 });
 
-function broadcastAllRooms() {
-  const data = { type: "room_list", rooms };
-  clients.forEach((ws) => send(ws, data));
-}
-
-// --- Express Test Route ---
 app.get("/", (req, res) => {
-  res.send("✅ DOCA WebDarts Server läuft erfolgreich!");
+  res.send("✅ DOCA WebDarts Server läuft auf Render erfolgreich!");
 });
 
-// --- Server Start ---
+// Render setzt automatisch process.env.PORT
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 DOCA WebDarts Server läuft auf Port ${PORT}`);
-  console.log("🌐 Bereit unter: https://doca-server.onrender.com");
+  console.log(`✅ Server läuft auf Port ${PORT}`);
+  console.log("🌐 Verfügbar unter: https://doca-server.onrender.com");
 });
