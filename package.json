@@ -1,14 +1,15 @@
 {
   "name": "doca-server",
   "version": "1.0.0",
+  "description": "DOCA WebDarts Server",
   "main": "server.js",
-  "type": "commonjs",
+  "type": "module",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "ws": "^8.17.0",
+    "express": "^4.21.2",
+    "ws": "^8.18.0",
     "cors": "^2.8.5"
   }
 }
