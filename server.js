@@ -1,5 +1,5 @@
 // server.js — DOCA WebDarts (final, with /debug-ws)
-// Vollständig, funktionsfähig, für Render.com optimiert
+// Korrigierte Variante: benutzt userManager.broadcastToPlayers für room/game broadcasts
 import express from "express";
 import http from "http";
 import { WebSocketServer } from "ws";
@@ -30,6 +30,7 @@ wss.on("connection", (ws) => {
 
   console.log("✅ Neuer Client verbunden:", clientId);
 
+  // send connected to the client (name may be "Gast" until auth)
   userManager.sendToClient?.(clientId, {
     type: "connected",
     clientId,
@@ -49,8 +50,19 @@ wss.on("connection", (ws) => {
     switch (type) {
       case "auth": {
         const name = payload.user || payload.username || payload.name;
-        if (name) userManager.setUserName(uid, name);
-        userManager.sendToClient?.(uid, { type: "connected", clientId: uid, name: userManager.getUserName(uid) });
+        if (name) {
+          userManager.setUserName(uid, name);
+          // confirm to the client
+          userManager.sendToClient?.(uid, { type: "connected", clientId: uid, name: userManager.getUserName(uid) });
+          // If user is already in a room, send updated room_state to that room
+          const room = roomManager.getRoomByClientId?.(uid);
+          if (room) {
+            const state = roomManager.getRoomState?.(room.id);
+            if (state) {
+              userManager.broadcastToPlayers?.(state.players, state);
+            }
+          }
+        }
         broadcastOnline();
         roomManager.updateRoomList?.();
         break;
@@ -84,7 +96,8 @@ wss.on("connection", (ws) => {
         if (ok) {
           const roomState = roomManager.getRoomState?.(rid);
           if (roomState) {
-            roomManager.broadcastToPlayers?.(roomState.players, roomState);
+            // <-- WICHTIG: userManager.broadcastToPlayers benutzen (nicht roomManager)
+            userManager.broadcastToPlayers?.(roomState.players, roomState);
           }
 
           const game = games.get(rid);
@@ -92,7 +105,7 @@ wss.on("connection", (ws) => {
             const gameState = game.getState?.();
             if (gameState) {
               const players = gameState.players || [];
-              roomManager.broadcastToPlayers?.(players, {
+              userManager.broadcastToPlayers?.(players, {
                 type: "game_state",
                 ...gameState,
                 playerNames: players.map(p => userManager.getUserName(p))
@@ -118,7 +131,8 @@ wss.on("connection", (ws) => {
         const state = g.getState?.();
         if (state) {
           const players = state.players || [];
-          roomManager.broadcastToPlayers?.(players, { type: "game_state", ...state, playerNames: players.map(p => userManager.getUserName(p)) });
+          // <-- userManager.broadcastToPlayers
+          userManager.broadcastToPlayers?.(players, { type: "game_state", ...state, playerNames: players.map(p => userManager.getUserName(p)) });
         }
         break;
       }
@@ -133,7 +147,8 @@ wss.on("connection", (ws) => {
         const state = g.getState?.();
         if (state) {
           const players = state.players || [];
-          roomManager.broadcastToPlayers?.(players, { type: "game_state", ...state, playerNames: players.map(p => userManager.getUserName(p)) });
+          // <-- userManager.broadcastToPlayers
+          userManager.broadcastToPlayers?.(players, { type: "game_state", ...state, playerNames: players.map(p => userManager.getUserName(p)) });
         }
         userManager.sendToClient?.(uid, { type: "action_result", action: "player_throw", ok: !!ok });
         break;
@@ -148,7 +163,8 @@ wss.on("connection", (ws) => {
         const state = g.getState?.();
         if (state) {
           const players = state.players || [];
-          roomManager.broadcastToPlayers?.(players, { type: "game_state", ...state, playerNames: players.map(p => userManager.getUserName(p)) });
+          // <-- userManager.broadcastToPlayers
+          userManager.broadcastToPlayers?.(players, { type: "game_state", ...state, playerNames: players.map(p => userManager.getUserName(p)) });
         }
         userManager.sendToClient?.(uid, { type: "action_result", action: "undo_throw", ok: !!ok });
         break;
