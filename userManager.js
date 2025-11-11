@@ -1,44 +1,51 @@
-// userManager.js — DOCA WebDarts PRO
-// Stabil, robuste Named exports. Arbeitet mit WebSocket-Instanzen oder clientId strings.
+// userManager.js — DOCA WebDarts PRO (korrigierte Version)
+// Verbesserte Namensverwaltung + Echtzeit-Sync für Raumzustände
 
 const clients = new Map();     // clientId -> ws
 const users = new Map();       // clientId -> { username }
 const sockets = new WeakMap(); // ws -> clientId
 
-/**
- * Generiert neue, collisionsarme clientId
- */
 function makeClientId() {
   return Math.random().toString(36).substring(2, 9);
 }
 
 /**
  * Register a new connection. Returns clientId (string).
- * If ws already registered, returns existing id (and updates name if provided).
+ * Updates name if already registered.
  */
 export function addUser(ws, username = "Gast") {
   if (!ws) return null;
+
   if (sockets.has(ws)) {
     const existing = sockets.get(ws);
-    if (username) users.set(existing, { username });
+    const current = users.get(existing) || {};
+    current.username = username || current.username || `Gast-${existing}`;
+    users.set(existing, current);
     return existing;
   }
+
   const clientId = makeClientId();
   clients.set(clientId, ws);
-  users.set(clientId, { username });
+  users.set(clientId, { username: username || `Gast-${clientId}` });
   sockets.set(ws, clientId);
+
+  // 🔹 Sofortige Bestätigung an Client (eigene ID + Name)
+  try {
+    ws.send(JSON.stringify({
+      type: "connected",
+      clientId,
+      name: username || `Gast-${clientId}`
+    }));
+  } catch {}
+
   return clientId;
 }
 
 /**
- * Remove a connection. Accepts either ws or clientId.
+ * Entfernt einen Benutzer (ws oder clientId)
  */
 export function removeUser(target) {
-  let clientId = null;
-  if (!target) return false;
-  if (typeof target === "string") clientId = target;
-  else clientId = sockets.get(target);
-
+  let clientId = typeof target === "string" ? target : sockets.get(target);
   if (!clientId) return false;
   const ws = clients.get(clientId);
   if (ws) sockets.delete(ws);
@@ -48,7 +55,7 @@ export function removeUser(target) {
 }
 
 /**
- * Get clientId for a ws (or return the value if already clientId).
+ * Liefert clientId für ws oder clientId selbst.
  */
 export function getClientId(target) {
   if (!target) return null;
@@ -57,41 +64,40 @@ export function getClientId(target) {
 }
 
 /**
- * Set/override username for a client (clientId or ws accepted).
+ * Setzt oder überschreibt Benutzernamen.
  */
 export function setUserName(target, username) {
   const clientId = getClientId(target);
   if (!clientId) return false;
-  const record = users.get(clientId) || {};
-  // KORREKTUR: Backticks `...` hinzugefügt
-  record.username = username || record.username || `Gast-${clientId}`;
-  users.set(clientId, record);
+  const rec = users.get(clientId) || {};
+  rec.username = username || rec.username || `Gast-${clientId}`;
+  users.set(clientId, rec);
   return true;
 }
 
 /**
- * Get username by clientId or ws.
+ * Holt Benutzernamen anhand clientId oder ws.
  */
 export function getUserName(target) {
   const clientId = getClientId(target);
   if (!clientId) return null;
-  return users.get(clientId)?.username || null;
+  const info = users.get(clientId);
+  return info?.username || `Gast-${clientId}`;
 }
 
 /**
- * Return a list of online usernames (strings).
+ * Liste aller Online-Benutzernamen
  */
 export function getOnlineUserNames() {
   const arr = [];
   for (const [id, info] of users.entries()) {
-    // KORREKTUR: Backticks `...` hinzugefügt
     arr.push(info.username || `Gast-${id}`);
   }
   return arr;
 }
 
 /**
- * Send a message object to a single clientId (or ws).
+ * Sendet ein Objekt an einen einzelnen Client.
  */
 export function sendToClient(target, obj) {
   const clientId = getClientId(target);
@@ -101,27 +107,25 @@ export function sendToClient(target, obj) {
   try {
     ws.send(JSON.stringify(obj));
     return true;
-  } catch (e) {
+  } catch {
     return false;
   }
 }
 
 /**
- * Broadcast a message object to all connected clients.
+ * Broadcast an alle verbundenen Clients.
  */
 export function broadcast(obj) {
   const data = JSON.stringify(obj);
   for (const ws of clients.values()) {
     try {
       if (ws && ws.readyState === ws.OPEN) ws.send(data);
-    } catch (e) {
-      // ignore individual send errors
-    }
+    } catch {}
   }
 }
 
 /**
- * Send to a list of playerIds (clientIds).
+ * Broadcast an bestimmte Spieler (clientIds)
  */
 export function broadcastToPlayers(playerIds = [], obj) {
   if (!Array.isArray(playerIds)) return;
@@ -131,13 +135,13 @@ export function broadcastToPlayers(playerIds = [], obj) {
     if (ws && ws.readyState === ws.OPEN) {
       try {
         ws.send(data);
-      } catch (e) {}
+      } catch {}
     }
   }
 }
 
 /**
- * Expose all clients (debug).
+ * Debug-Übersicht (clientId + Name)
  */
 export function listOnlineUsers() {
   return Array.from(users.entries()).map(([id, u]) => ({ id, username: u.username }));
