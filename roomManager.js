@@ -1,8 +1,9 @@
 // roomManager.js — DOCA WebDarts PRO
-// Korrigiert: Spieler werden korrekt synchronisiert, wenn jemand beitritt
+// Finalversion: Spieler werden korrekt synchronisiert + Namen garantiert sichtbar
 
 import {
   getUserName,
+  setUserName,
   broadcast,
   broadcastToPlayers,
   getClientId
@@ -21,7 +22,7 @@ function makeRoomState(room) {
     name: room.name,
     ownerId: room.ownerId,
     players: room.players.slice(),
-    playerNames: room.players.map((p) => getUserName(p) || "Gast"),
+    playerNames: room.players.map((p) => getUserName(p) || `Gast-${p}`),
     options: room.options || {},
     maxPlayers: room.maxPlayers,
     createdAt: room.createdAt
@@ -53,9 +54,12 @@ export function createRoom(clientIdOrWs, name = "Neuer Raum", options = {}) {
     cleanupTimers.delete(id);
   }
 
-  updateRoomList();
-  // ➕ informiere Ersteller sofort mit korrektem Room State
+  // Namen sicherstellen
+  const uName = getUserName(clientId);
+  if (!uName) setUserName(clientId, `Gast-${clientId}`);
+
   broadcastToPlayers([clientId], makeRoomState(room));
+  updateRoomList();
   return id;
 }
 
@@ -65,36 +69,39 @@ export function joinRoom(clientIdOrWs, roomId) {
   const room = rooms.get(roomId);
   if (!room) return false;
 
-  // wenn Spieler schon drin ist
+  // evtl. alten Raum verlassen
+  const prev = userRooms.get(clientId);
+  if (prev && prev !== roomId) leaveRoom(clientId);
+
   if (room.players.includes(clientId)) {
     if (cleanupTimers.has(roomId)) {
       clearTimeout(cleanupTimers.get(roomId));
       cleanupTimers.delete(roomId);
     }
     broadcastToPlayers(room.players, makeRoomState(room));
-    updateRoomList();
     return true;
   }
 
-  // wenn Spieler woanders ist, vorher entfernen
-  const prev = userRooms.get(clientId);
-  if (prev && prev !== roomId) leaveRoom(clientId);
-
   if (room.players.length >= room.maxPlayers) return false;
+
+  // Name garantieren
+  let uName = getUserName(clientId);
+  if (!uName) {
+    uName = `Gast-${clientId}`;
+    setUserName(clientId, uName);
+  }
 
   room.players.push(clientId);
   userRooms.set(clientId, roomId);
 
-  // cleanup abbrechen
   if (cleanupTimers.has(roomId)) {
     clearTimeout(cleanupTimers.get(roomId));
     cleanupTimers.delete(roomId);
   }
 
-  // 🟢 Wichtig: Namen sofort aktualisieren
-  const updatedState = makeRoomState(room);
-  broadcastToPlayers(room.players, updatedState);
-
+  // aktualisierten Zustand an alle senden
+  const updated = makeRoomState(room);
+  broadcastToPlayers(room.players, updated);
   updateRoomList();
   return true;
 }
@@ -118,7 +125,6 @@ export function leaveRoom(clientIdOrWs) {
   }
 
   if (room.players.length === 0) {
-    // leeren Raum verzögert löschen
     if (cleanupTimers.has(rid)) clearTimeout(cleanupTimers.get(rid));
     const t = setTimeout(() => {
       const r = rooms.get(rid);
@@ -157,7 +163,7 @@ export function updateRoomList() {
   const list = Array.from(rooms.values()).map((r) => ({
     id: r.id,
     name: r.name,
-    owner: getUserName(r.ownerId) || "Gast",
+    owner: getUserName(r.ownerId) || `Gast-${r.ownerId}`,
     playerCount: r.players.length,
     maxPlayers: r.maxPlayers,
     options: r.options || {}
