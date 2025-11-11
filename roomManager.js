@@ -1,63 +1,82 @@
-// userManager.js (FINAL & VERIFIED)
-const clients = new Map();
-const users = new Map();
-const sockets = new WeakMap();
+// roomManager.js (FINAL, VERIFIED & CORRECTED)
+import { getUserName, broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
+import Game from "./game.js";
 
-function makeClientId() { return Math.random().toString(36).substring(2, 9); }
+const rooms = new Map();
+const userRooms = new Map();
 
-export function broadcast(obj) {
-    const data = JSON.stringify(obj);
-    for (const ws of clients.values()) {
-        if (ws && ws.readyState === 1) ws.send(data);
+// HIER IST DAS KORRIGIERTE 'export'
+export function broadcastRoomList() {
+    const roomList = Array.from(rooms.values()).map(r => ({
+        id: r.id, name: r.name, owner: getUserName(r.ownerId),
+        playerCount: r.players.length, maxPlayers: r.maxPlayers, isStarted: !!r.game?.isStarted,
+    }));
+    broadcast({ type: "room_update", rooms: roomList });
+}
+
+function getFullRoomState(room) {
+    const gameState = room.game ? room.game.getState() : {};
+    return {
+        type: "room_state", id: room.id, name: room.name, ownerId: room.ownerId,
+        players: room.players, playerNames: room.players.map(pId => getUserName(pId)),
+        maxPlayers: room.maxPlayers, options: room.options, ...gameState,
+    };
+}
+
+export function createRoom(clientId, name, options) {
+    if (userRooms.has(clientId)) leaveRoom(clientId);
+    const roomId = Math.random().toString(36).slice(2, 9);
+    const room = {
+        id: roomId, name: name || `Raum von ${getUserName(clientId)}`, ownerId: clientId,
+        players: [clientId], maxPlayers: 2, options, game: null,
+    };
+    rooms.set(roomId, room);
+    userRooms.set(clientId, roomId);
+    sendToClient(clientId, getFullRoomState(room));
+    broadcastRoomList();
+}
+
+export function joinRoom(clientId, roomId) {
+    const room = rooms.get(roomId);
+    if (!room) return sendToClient(clientId, { type: "error", message: "Raum nicht gefunden." });
+    if (userRooms.has(clientId) && userRooms.get(clientId) !== roomId) leaveRoom(clientId);
+    if (room.players.length >= room.maxPlayers && !room.players.includes(clientId)) return;
+
+    if (!room.players.includes(clientId)) room.players.push(clientId);
+    userRooms.set(clientId, roomId);
+    broadcastToPlayers(room.players, getFullRoomState(room));
+    broadcastRoomList();
+}
+
+export function leaveRoom(clientId) {
+    const roomId = userRooms.get(clientId);
+    if (!roomId) return;
+    const room = rooms.get(roomId);
+    userRooms.delete(clientId);
+    if (room) {
+        room.players = room.players.filter(pId => pId !== clientId);
+        if (room.players.length === 0) {
+            setTimeout(() => { if (room.players.length === 0) rooms.delete(roomId) && broadcastRoomList(); }, 30000);
+        } else {
+            if (room.ownerId === clientId) room.ownerId = room.players[0];
+            broadcastToPlayers(room.players, getFullRoomState(room));
+        }
+    }
+    broadcastRoomList();
+}
+
+export function startGame(clientId) {
+    const room = userRooms.has(clientId) ? rooms.get(userRooms.get(clientId)) : null;
+    if (room && room.ownerId === clientId && room.players.length > 1) {
+        room.game = new Game(room.players, room.options);
+        broadcastToPlayers(room.players, getFullRoomState(room));
+        broadcastRoomList();
     }
 }
 
-export function broadcastOnlineList() {
-    const userList = Array.from(users.values()).map(u => u.username);
-    broadcast({ type: "online_list", users: userList });
-}
-
-export function addUser(ws) {
-    const clientId = makeClientId();
-    const defaultUsername = `Gast-${clientId.slice(0, 5)}`;
-    clients.set(clientId, ws);
-    users.set(clientId, { username: defaultUsername });
-    sockets.set(ws, clientId);
-    sendToClient(clientId, { type: "connected", clientId, name: defaultUsername });
-    broadcastOnlineList();
-    return clientId;
-}
-
-export function removeUser(clientId) {
-    if (!clientId) return false;
-    clients.delete(clientId);
-    users.delete(clientId);
-    broadcastOnlineList();
-    return true;
-}
-
-export function authenticate(clientId, username) {
-    if (!clientId || !username) return false;
-    const user = users.get(clientId);
-    if (user) {
-        user.username = username;
-        sendToClient(clientId, { type: "auth_ok", message: `Authentifiziert als ${username}` });
-        broadcastOnlineList();
+export function handleGameAction(clientId, action) {
+    const room = userRooms.has(clientId) ? rooms.get(userRooms.get(clientId)) : null;
+    if (room?.game?.handleAction(clientId, action)) {
+        broadcastToPlayers(room.players, getFullRoomState(room));
     }
-    return !!user;
-}
-
-export function getUserName(clientId) { return users.get(clientId)?.username || null; }
-
-export function sendToClient(clientId, obj) {
-    const ws = clients.get(clientId);
-    if (ws && ws.readyState === 1) {
-        ws.send(JSON.stringify(obj));
-        return true;
-    }
-    return false;
-}
-
-export function broadcastToPlayers(playerIds = [], obj) {
-    for (const pid of playerIds) sendToClient(pid, obj);
 }
