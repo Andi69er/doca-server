@@ -1,4 +1,4 @@
-// game.js (FINAL & VERIFIED)
+// game.js (FINAL & COMPLETE)
 export default class Game {
     constructor(players, options) {
         this.players = players;
@@ -31,12 +31,9 @@ export default class Game {
         if (typeof points !== 'number' || points < 0 || points > 180) return false;
         const clientId = this.players[this.currentPlayerIndex];
         const newScore = this.scores[clientId] - points;
-
         if (newScore < 0 || newScore === 1) { this.nextPlayer(); return true; }
-        
         this.scores[clientId] = newScore;
         this.turnThrows.push(points);
-
         if (newScore === 0) { this.winner = clientId; return true; }
         if (this.turnThrows.length >= 3) this.nextPlayer();
         return true;

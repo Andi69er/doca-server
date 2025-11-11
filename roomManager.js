@@ -1,12 +1,13 @@
-// roomManager.js (FINAL, VERIFIED & CORRECTED)
+// roomManager.js (FINAL & COMPLETE)
 import { getUserName, broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
 
 const rooms = new Map();
 const userRooms = new Map();
 
-// HIER IST DAS KORRIGIERTE 'export'
+// Sendet die aktuelle Raum-Liste an alle
 export function broadcastRoomList() {
+    console.log("   -> Antwort: Sende Raumliste an alle Clients...");
     const roomList = Array.from(rooms.values()).map(r => ({
         id: r.id, name: r.name, owner: getUserName(r.ownerId),
         playerCount: r.players.length, maxPlayers: r.maxPlayers, isStarted: !!r.game?.isStarted,
@@ -14,6 +15,7 @@ export function broadcastRoomList() {
     broadcast({ type: "room_update", rooms: roomList });
 }
 
+// Stellt den kompletten Zustand eines Raumes zusammen (Spieler, Spielstand etc.)
 function getFullRoomState(room) {
     const gameState = room.game ? room.game.getState() : {};
     return {
@@ -23,6 +25,7 @@ function getFullRoomState(room) {
     };
 }
 
+// Erstellt einen neuen Raum
 export function createRoom(clientId, name, options) {
     if (userRooms.has(clientId)) leaveRoom(clientId);
     const roomId = Math.random().toString(36).slice(2, 9);
@@ -36,6 +39,7 @@ export function createRoom(clientId, name, options) {
     broadcastRoomList();
 }
 
+// Lässt einen Spieler einem Raum beitreten
 export function joinRoom(clientId, roomId) {
     const room = rooms.get(roomId);
     if (!room) return sendToClient(clientId, { type: "error", message: "Raum nicht gefunden." });
@@ -48,6 +52,7 @@ export function joinRoom(clientId, roomId) {
     broadcastRoomList();
 }
 
+// Lässt einen Spieler einen Raum verlassen
 export function leaveRoom(clientId) {
     const roomId = userRooms.get(clientId);
     if (!roomId) return;
@@ -65,6 +70,7 @@ export function leaveRoom(clientId) {
     broadcastRoomList();
 }
 
+// Startet das Spiel in einem Raum
 export function startGame(clientId) {
     const room = userRooms.has(clientId) ? rooms.get(userRooms.get(clientId)) : null;
     if (room && room.ownerId === clientId && room.players.length > 1) {
@@ -74,6 +80,7 @@ export function startGame(clientId) {
     }
 }
 
+// Verarbeitet eine Spielaktion (Wurf, Undo)
 export function handleGameAction(clientId, action) {
     const room = userRooms.has(clientId) ? rooms.get(userRooms.get(clientId)) : null;
     if (room?.game?.handleAction(clientId, action)) {
