@@ -1,9 +1,10 @@
-// roomManager.js (FINALE, STABILE VERSION 9.0)
+// roomManager.js (FINALE, STABILE VERSION 10.0 - Grace-Period-Fix)
 import { broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
 
 const rooms = new Map();
 const userRooms = new Map(); // clientId -> roomId
+const roomDeletionTimers = new Map(); // roomId -> timerId
 
 export function broadcastRoomList() {
     const roomList = Array.from(rooms.values()).map(r => ({
@@ -28,7 +29,7 @@ function getFullRoomState(room) {
 }
 
 export function createRoom(clientId, ownerUsername, name, options) {
-    if (!ownerUsername) { console.log("Raumerstellung abgebrochen: Kein Benutzername."); return; }
+    if (!ownerUsername) return;
     if (userRooms.has(clientId)) leaveRoom(clientId);
     const roomId = Math.random().toString(36).slice(2, 9);
     const room = {
@@ -45,9 +46,16 @@ export function createRoom(clientId, ownerUsername, name, options) {
 }
 
 export function joinRoom(clientId, username, roomId) {
-    if (!username) { console.log("Beitritt abgebrochen: Kein Benutzername."); return; }
+    if (!username) return;
     const room = rooms.get(roomId);
     if (!room) return;
+
+    // KERNKORREKTUR 1: Wenn ein Raum beigetreten wird, den Lösch-Timer abbrechen.
+    if (roomDeletionTimers.has(roomId)) {
+        clearTimeout(roomDeletionTimers.get(roomId));
+        roomDeletionTimers.delete(roomId);
+        console.log(`Lösch-Timer für Raum ${roomId} abgebrochen.`);
+    }
 
     const playerIndex = room.playerNames.indexOf(username);
     if (playerIndex !== -1) {
@@ -77,8 +85,20 @@ export function leaveRoom(clientId) {
     if (playerIndex !== -1) {
         room.players[playerIndex] = null;
         userRooms.delete(clientId);
+        
+        // KERNKORREKTUR 2: Raum nicht sofort löschen, sondern Timer starten.
         if (room.players.every(p => p === null)) {
-            rooms.delete(roomId);
+            console.log(`Raum ${roomId} ist leer. Starte 15-Sekunden-Lösch-Timer.`);
+            const timer = setTimeout(() => {
+                // Erneute Prüfung, falls zwischenzeitlich jemand beigetreten ist
+                if (room.players.every(p => p === null)) {
+                    rooms.delete(roomId);
+                    console.log(`Raum ${roomId} nach Inaktivität endgültig gelöscht.`);
+                    broadcastRoomList(); // Alle informieren, dass der Raum weg ist.
+                }
+                roomDeletionTimers.delete(roomId);
+            }, 15000); // 15 Sekunden Grace Period
+            roomDeletionTimers.set(roomId, timer);
         } else {
             broadcastToPlayers(room.players, getFullRoomState(room));
         }
