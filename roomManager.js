@@ -1,4 +1,4 @@
-// roomManager.js (FINAL, STABLE & CORRECTED LOGIC)
+// roomManager.js (FINAL, STABLE & CORRECT LOGIC)
 import { getUserName, broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
 
@@ -15,11 +15,12 @@ export function broadcastRoomList() {
 
 function getFullRoomState(room) {
     if (!room) return null;
-    const gameState = room.game ? room.game.getState() : {};
     return {
-        type: "room_state", id: room.id, name: room.name, ownerId: room.ownerId,
+        type: room.game ? "game_state" : "room_state",
+        id: room.id, name: room.name, ownerId: room.ownerId,
         players: room.players, playerNames: room.players.map(pId => getUserName(pId)),
-        maxPlayers: room.maxPlayers, options: room.options, ...gameState,
+        maxPlayers: room.maxPlayers, options: room.options,
+        ...(room.game ? room.game.getState() : {})
     };
 }
 
@@ -28,9 +29,9 @@ export function createRoom(clientId, name, options) {
     const roomId = Math.random().toString(36).slice(2, 9);
     const room = {
         id: roomId, name: name || `Raum von ${getUserName(clientId)}`, 
-        players: [clientId], maxPlayers: 2, options, game: null,
-        // Der ownerId wird hier gesetzt und NIE WIEDER GEÄNDERT.
-        ownerId: clientId, 
+        players: [clientId], // Der Ersteller ist an Position 0
+        ownerId: clientId,   // Er ist der Besitzer
+        maxPlayers: 2, options, game: null,
     };
     rooms.set(roomId, room);
     userRooms.set(clientId, roomId);
@@ -41,10 +42,20 @@ export function createRoom(clientId, name, options) {
 export function joinRoom(clientId, roomId) {
     const room = rooms.get(roomId);
     if (!room) return sendToClient(clientId, { type: "error", message: "Raum nicht gefunden." });
-    if (userRooms.has(clientId)) leaveRoom(clientId);
-    if (room.players.length >= room.maxPlayers && !room.players.includes(clientId)) return;
 
-    if (!room.players.includes(clientId)) room.players.push(clientId);
+    // Wenn der Spieler schon in einem anderen Raum ist, verlasse diesen zuerst.
+    if (userRooms.has(clientId)) leaveRoom(clientId);
+
+    // Verhindere, dass der gleiche Client mehrmals hinzugefügt wird.
+    if (room.players.includes(clientId)) {
+        broadcastToPlayers(room.players, getFullRoomState(room));
+        return;
+    }
+    
+    if (room.players.length >= room.maxPlayers) return;
+
+    // Spieler hinten anfügen
+    room.players.push(clientId);
     userRooms.set(clientId, roomId);
     broadcastToPlayers(room.players, getFullRoomState(room));
     broadcastRoomList();
@@ -57,6 +68,7 @@ export function leaveRoom(clientId) {
     userRooms.delete(clientId);
 
     if (room) {
+        const wasOwner = room.ownerId === clientId;
         room.players = room.players.filter(pId => pId !== clientId);
 
         if (room.players.length === 0) {
@@ -68,9 +80,10 @@ export function leaveRoom(clientId) {
                 }
             }, 5000);
         } else {
-            // ======================================================================
-            // DIE FEHLERHAFTE ZEILE WURDE ENTFERNT. Der Besitzer wird nicht mehr geändert.
-            // ======================================================================
+             // Wenn der Besitzer gegangen ist, wird der NÄCHSTE in der Liste (jetzt an Position 0) zum Besitzer.
+            if (wasOwner) {
+                room.ownerId = room.players[0];
+            }
             broadcastToPlayers(room.players, getFullRoomState(room));
             broadcastRoomList();
         }
@@ -82,7 +95,6 @@ export function startGame(clientId) {
     if (room && room.ownerId === clientId && room.players.length > 1) {
         room.game = new Game(room.players, room.options);
         broadcastToPlayers(room.players, getFullRoomState(room));
-        broadcastRoomList();
     }
 }
 
