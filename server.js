@@ -1,4 +1,4 @@
-// server.js (FINAL & COMPLETE - mit Heartbeat-Fix)
+// server.js (FINAL & COMPLETE - mit WebRTC-Fix)
 import express from "express";
 import http from "http";
 import cors from "cors";
@@ -14,7 +14,7 @@ const wss = new WebSocketServer({ server });
 
 console.log("🚀 FINAL VERSION: Initialisierung des DOCA WebDarts Servers...");
 
-// NEU: Heartbeat-Mechanismus zum Bereinigen toter Verbindungen
+// Heartbeat-Mechanismus zum Bereinigen toter Verbindungen
 const interval = setInterval(() => {
     wss.clients.forEach((ws) => {
         // @ts-ignore
@@ -26,22 +26,18 @@ const interval = setInterval(() => {
         }
         // @ts-ignore
         ws.isAlive = false;
-        ws.ping(); // Sendet einen Ping an den Client; der Client antwortet automatisch mit Pong
+        ws.ping();
     });
-}, 30000); // Prüfung alle 30 Sekunden
+}, 30000);
 
 wss.on("connection", (ws) => {
     // @ts-ignore
-    ws.isAlive = true; // Neue Verbindung als lebendig markieren
-    
+    ws.isAlive = true;
     // @ts-ignore
-    ws.on('pong', () => { // Wenn der Client antwortet, wird er wieder als lebendig markiert
-        // @ts-ignore
-        ws.isAlive = true;
-    });
+    ws.on('pong', () => { ws.isAlive = true; });
 
     const clientId = userManager.addUser(ws);
-    // @ts-ignore - Hängen wir die ClientID an das ws-Objekt für bessere Logs
+    // @ts-ignore
     ws.clientId = clientId;
     
     console.log(`✅ Neuer Client verbunden: ${clientId}`);
@@ -66,6 +62,22 @@ wss.on("connection", (ws) => {
             case "start_game": roomManager.startGame(clientId); break;
             case "player_throw":
             case "undo_throw": roomManager.handleGameAction(clientId, data); break;
+            
+            // =======================================================
+            // KORREKTUR: Fehlender Fall für WebRTC-Signalisierung
+            // Dieser Block leitet die Video-Handshake-Nachrichten weiter.
+            // =======================================================
+            case "webrtc_signal": {
+                const targetId = data.payload?.target;
+                if (targetId) {
+                    // Leite die Nachricht 1-zu-1 an den Ziel-Client weiter
+                    userManager.sendToClient(targetId, data);
+                } else {
+                    console.warn(`[${clientId}] sendete webrtc_signal ohne targetId.`);
+                }
+                break;
+            }
+
             case "ping": userManager.sendToClient(clientId, { type: "pong" }); break;
             default: console.warn(`⚠️ Unbekannter Nachrichtentyp: ${data.type}`);
         }
@@ -78,7 +90,6 @@ wss.on("connection", (ws) => {
     });
 });
 
-// NEU: Interval aufräumen, wenn der Server herunterfährt
 wss.on('close', () => {
     clearInterval(interval);
 });
