@@ -1,7 +1,7 @@
-// userManager.js (FINAL & COMPLETE)
-const clients = new Map();
-const users = new Map();
-const sockets = new WeakMap();
+// userManager.js (REVISED & CORRECTED)
+const clients = new Map(); // Map<clientId, ws>
+const users = new Map();   // Map<username, { clientId: string }>
+const clientToUser = new Map(); // Map<clientId, username>
 
 function makeClientId() { return Math.random().toString(36).substring(2, 9); }
 
@@ -15,19 +15,20 @@ export function broadcast(obj) {
 
 // Sendet die aktuelle Online-Liste an alle
 export function broadcastOnlineList() {
-    console.log("   -> Antwort: Sende Online-Liste an alle Clients...");
-    const userList = Array.from(users.values()).map(u => u.username);
+    const userList = Array.from(users.keys());
     broadcast({ type: "online_list", users: userList });
 }
 
-// Fügt einen neuen Benutzer hinzu, wenn eine neue Verbindung aufgebaut wird
+// Fügt eine neue Verbindung hinzu und generiert eine temporäre ID
 export function addUser(ws) {
     const clientId = makeClientId();
-    const defaultUsername = `Gast-${clientId.slice(0, 5)}`;
+    const tempUsername = `Gast-${clientId.slice(0, 5)}`;
+    
     clients.set(clientId, ws);
-    users.set(clientId, { username: defaultUsername });
-    sockets.set(ws, clientId);
-    sendToClient(clientId, { type: "connected", clientId, name: defaultUsername });
+    clientToUser.set(clientId, tempUsername);
+    users.set(tempUsername, { clientId });
+    
+    sendToClient(clientId, { type: "connected", clientId, name: tempUsername });
     broadcastOnlineList();
     return clientId;
 }
@@ -35,28 +36,55 @@ export function addUser(ws) {
 // Entfernt einen Benutzer bei Verbindungsabbruch
 export function removeUser(clientId) {
     if (!clientId) return false;
+    
+    const username = clientToUser.get(clientId);
     clients.delete(clientId);
-    users.delete(clientId);
+    clientToUser.delete(clientId);
+    
+    // Wichtig: Den Benutzer nur entfernen, wenn dies seine letzte aktive Verbindung war.
+    // Dies verhindert, dass er bei einem Seitenwechsel sofort als "offline" gilt.
+    if (username && users.get(username)?.clientId === clientId) {
+        users.delete(username);
+    }
+    
     broadcastOnlineList();
     return true;
 }
 
 // Weist einem Benutzer nach dem Login seinen richtigen Namen zu
+// Dies ist die Schlüsselfunktion für die persistente Logik
 export function authenticate(clientId, username) {
     if (!clientId || !username) return false;
-    const user = users.get(clientId);
-    if (user) {
-        user.username = username;
-        sendToClient(clientId, { type: "auth_ok", message: `Authentifiziert als ${username}` });
-        broadcastOnlineList();
+
+    const oldUsername = clientToUser.get(clientId);
+    
+    // Wenn der Benutzer bereits unter einem anderen Namen angemeldet war, diesen entfernen
+    if (oldUsername && oldUsername !== username) {
+        users.delete(oldUsername);
     }
-    return !!user;
+
+    // WICHTIG: Alte Verbindung für denselben Benutzernamen übernehmen/schließen
+    if (users.has(username)) {
+        const oldClientId = users.get(username).clientId;
+        const oldSocket = clients.get(oldClientId);
+        if (oldSocket && oldSocket.readyState === 1) {
+            // Optional: Alte Verbindung schließen, um doppelte Logins zu verhindern
+            // oldSocket.close(1000, "New connection established");
+        }
+    }
+    
+    users.set(username, { clientId });
+    clientToUser.set(clientId, username);
+
+    sendToClient(clientId, { type: "auth_ok", message: `Authentifiziert als ${username}` });
+    broadcastOnlineList();
+    return true;
 }
 
-// Holt den Namen eines Benutzers
-export function getUserName(clientId) { return users.get(clientId)?.username || null; }
+// Holt den Namen eines Benutzers anhand seiner clientId
+export function getUserName(clientId) { return clientToUser.get(clientId) || null; }
 
-// Sendet eine Nachricht an einen EINZELNEN Client
+// Sendet eine Nachricht an einen EINZELNEN Client (via clientId)
 export function sendToClient(clientId, obj) {
     const ws = clients.get(clientId);
     if (ws && ws.readyState === 1) {
@@ -66,7 +94,12 @@ export function sendToClient(clientId, obj) {
     return false;
 }
 
-// Sendet eine Nachricht an eine Gruppe von Spielern (z.B. in einem Raum)
-export function broadcastToPlayers(playerIds = [], obj) {
-    for (const pid of playerIds) sendToClient(pid, obj);
+// Sendet eine Nachricht an eine Gruppe von Spielern (via username)
+export function broadcastToPlayers(usernames = [], obj) {
+    for (const username of usernames) {
+        const user = users.get(username);
+        if (user) {
+            sendToClient(user.clientId, obj);
+        }
+    }
 }
