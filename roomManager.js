@@ -1,4 +1,4 @@
-// roomManager.js (REVISED & ROBUST - WITH FIX)
+// roomManager.js (FINAL & CORRECTED)
 import * as userManager from "./userManager.js";
 import Game from "./game.js";
 
@@ -15,22 +15,22 @@ export function broadcastRoomList() {
 }
 
 function getFullRoomState(room) {
+    if (!room) return null;
     const gameState = room.game ? room.game.getState() : {};
-    // Wichtig: ClientIDs werden jetzt on-the-fly für den Versand nachgeschlagen
     const playerClientIds = room.players.map(username => userManager.getClientId(username));
     return {
         type: "room_state", id: room.id, name: room.name, ownerId: userManager.getClientId(room.owner),
-        players: playerClientIds, playerNames: room.players,
+        players: playerClientIds.filter(id => id), // Nur gültige IDs senden
+        playerNames: room.players,
         maxPlayers: room.maxPlayers, options: room.options, ...gameState,
     };
 }
 
-// Sendet den Zustand eines Raumes an alle seine Mitglieder
 function broadcastRoomState(roomId) {
     const room = rooms.get(roomId);
     if (room) {
         const state = getFullRoomState(room);
-        userManager.broadcastToUsers(room.players, state);
+        if (state) userManager.broadcastToUsers(room.players, state);
     }
 }
 
@@ -60,11 +60,18 @@ export function joinRoom(clientId, roomId) {
         leaveRoom(username);
     }
 
-    if (room.players.length >= room.maxPlayers && !room.players.includes(username)) return;
-
+    // ##### DIE ENTSCHEIDENDE KORREKTUR IST HIER #####
+    // Verhindert, dass ein wiederkehrender Spieler doppelt hinzugefügt wird.
     if (!room.players.includes(username)) {
-        room.players.push(username);
+        if (room.players.length < room.maxPlayers) {
+            room.players.push(username);
+        } else {
+            // Raum ist voll, Beitritt ablehnen
+            return userManager.sendToClient(clientId, { type: "error", message: "Raum ist bereits voll." });
+        }
     }
+    // ###############################################
+
     userRooms.set(username, roomId);
     broadcastRoomState(roomId);
     broadcastRoomList();
@@ -89,7 +96,7 @@ export function leaveRoom(username) {
             }, 30000);
         } else {
             if (room.owner === username) {
-                room.owner = room.players[0]; // Der nächste Spieler wird zum Host
+                room.owner = room.players[0];
                 console.log(`Host-Wechsel in Raum ${roomId} zu ${room.owner}`);
             }
             broadcastRoomState(roomId);
@@ -108,7 +115,7 @@ export function startGame(clientId) {
     if (!username) return;
     const room = userRooms.has(username) ? rooms.get(userRooms.get(username)) : null;
     if (room && room.owner === username && room.players.length > 1) {
-        const playerClientIds = room.players.map(p => userManager.getClientId(p));
+        const playerClientIds = room.players.map(p => userManager.getClientId(p)).filter(id => id);
         room.game = new Game(playerClientIds, room.options);
         broadcastRoomState(room.id);
         broadcastRoomList();
@@ -124,7 +131,6 @@ export function handleGameAction(clientId, action) {
     }
 }
 
-// NEUE, KORREKTE FUNKTION
 export function getRoomIdForUser(username) {
     return userRooms.get(username);
 }
