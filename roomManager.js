@@ -1,4 +1,4 @@
-// roomManager.js (REVISED & ROBUST)
+// roomManager.js (REVISED & ROBUST - WITH FIX)
 import * as userManager from "./userManager.js";
 import Game from "./game.js";
 
@@ -98,7 +98,6 @@ export function leaveRoom(username) {
     broadcastRoomList();
 }
 
-// Diese Funktion wird vom userManager aufgerufen, NACHDEM die Grace Period abgelaufen ist.
 export function handleFinalUserRemoval(username) {
     console.log(`Finale Entfernung für ${username} wird im Raum-Management verarbeitet.`);
     leaveRoom(username);
@@ -109,7 +108,6 @@ export function startGame(clientId) {
     if (!username) return;
     const room = userRooms.has(username) ? rooms.get(userRooms.get(username)) : null;
     if (room && room.owner === username && room.players.length > 1) {
-        // Die Spiele-Klasse braucht die ClientIDs für die Logik
         const playerClientIds = room.players.map(p => userManager.getClientId(p));
         room.game = new Game(playerClientIds, room.options);
         broadcastRoomState(room.id);
@@ -124,4 +122,9 @@ export function handleGameAction(clientId, action) {
     if (room?.game?.handleAction(clientId, action)) {
         broadcastRoomState(room.id);
     }
+}
+
+// NEUE, KORREKTE FUNKTION
+export function getRoomIdForUser(username) {
+    return userRooms.get(username);
 }

@@ -1,4 +1,4 @@
-// server.js (REVISED & ROBUST)
+// server.js (REVISED & ROBUST - WITH FIX)
 import express from "express";
 import http from "http";
 import cors from "cors";
@@ -30,10 +30,13 @@ wss.on("connection", (ws) => {
                 const success = userManager.authenticate(clientId, data.payload.username);
                 // Nach erfolgreicher Authentifizierung den Client über seinen Raum informieren, falls er in einem war
                 if (success) {
-                    const roomId = roomManager.userRooms.get(data.payload.username);
+                    const roomId = roomManager.getRoomIdForUser(data.payload.username);
                     if (roomId) {
                         console.log(`   -> Benutzer ${data.payload.username} wird in Raum ${roomId} wiederhergestellt.`);
-                        roomManager.broadcastRoomState(roomId);
+                        // Die Logik zum Senden des Raumstatus ist bereits im roomManager,
+                        // wir müssen nur sicherstellen, dass sie aufgerufen wird.
+                        // Ein erneutes Joinen ist der sauberste Weg.
+                        roomManager.joinRoom(clientId, roomId);
                     }
                 }
                 break;
@@ -61,14 +64,7 @@ wss.on("connection", (ws) => {
     ws.on("close", () => {
         console.log(`❌ Verbindung getrennt: ${clientId}`);
         const username = userManager.startUserRemoval(clientId);
-        // Wenn der Benutzer in einem Raum war, informieren wir die anderen Spieler
-        if (username) {
-            const roomId = roomManager.userRooms.get(username);
-            if (roomId) {
-                // Sende einen benutzerdefinierten Event, den das Frontend anzeigen kann
-                //userManager.broadcastToUsers(rooms.get(roomId).players, { type: 'player_disconnected', username });
-            }
-        }
+        // Die weitere Logik wird nun durch den Timer in userManager.js gehandhabt.
     });
 });
 
