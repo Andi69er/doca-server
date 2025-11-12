@@ -1,4 +1,4 @@
-// roomManager.js (FINAL & COMPLETE - WITH RACE-CONDITION-FIX)
+// roomManager.js (FINAL & COMPLETE - SYNTAX FIXED)
 import { getUserName, broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
 
@@ -35,7 +35,7 @@ export function createRoom(clientId, name, options) {
         players: [username], maxPlayers: 2, options, game: null,
     };
     rooms.set(roomId, room);
-    userRooms.set(username, room.id); // Korrigiert: roomId hier speichern
+    userRooms.set(username, room.id);
     sendToClient(clientId, getFullRoomState(room));
     broadcastRoomList();
 }
@@ -66,14 +66,12 @@ export function joinRoom(clientId, roomId) {
         room.players.push(username);
     }
 
-    // *** NEUE LOGIK ZUR BEHEBUNG DER RACE CONDITION ***
-    // Wenn ein "echter" Benutzer beitritt und der aktuelle Besitzer ein "Gast" ist,
-    // wird der echte Benutzer zum neuen Besitzer befördert.
+    // RACE CONDITION FIX: Echter Benutzer hat Vorrang vor Gast.
     const isGuest = (u) => u.toLowerCase().startsWith('gast');
     if (!isGuest(username) && isGuest(room.owner)) {
         console.log(`Benutzer '${username}' wird zum neuen Besitzer befördert (vorher: '${room.owner}').`);
         room.owner = username;
-        // Setze den neuen Besitzer an den Anfang der Spielerliste für die korrekte Reihenfolge.
+        
         const playerIndex = room.players.indexOf(username);
         if (playerIndex > 0) {
             room.players.splice(playerIndex, 1);
@@ -105,10 +103,10 @@ export function leaveRoom(clientId) {
                     rooms.delete(roomId);
                     broadcastRoomList();
                 }
-            }, 30000); // Raum nach 30s leeren
+            }, 30000);
         } else {
             if (room.owner === username) {
-                room.owner = room.players[0]; // Der verbleibende Spieler wird Besitzer
+                room.owner = room.players[0];
             }
             broadcastToPlayers(room.players, getFullRoomState(room));
         }
@@ -134,3 +132,4 @@ export function handleGameAction(clientId, action) {
     if (room?.game?.handleAction(username, action)) {
         broadcastToPlayers(room.players, getFullRoomState(room));
     }
+}
