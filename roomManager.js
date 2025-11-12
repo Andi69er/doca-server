@@ -1,89 +1,123 @@
-// roomManager.js (FINAL & COMPLETE)
-import { getUserName, broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
+// roomManager.js (FINAL & CORRECTED)
+import { getUserName, broadcast, broadcastToPlayers, sendToClient, sendToUser } from "./userManager.js";
 import Game from "./game.js";
 
 const rooms = new Map();
 const userRooms = new Map();
 
-// Sendet die aktuelle Raum-Liste an alle
 export function broadcastRoomList() {
-    console.log("   -> Antwort: Sende Raumliste an alle Clients...");
     const roomList = Array.from(rooms.values()).map(r => ({
-        id: r.id, name: r.name, owner: getUserName(r.ownerId),
-        playerCount: r.players.length, maxPlayers: r.maxPlayers, isStarted: !!r.game?.isStarted,
+        id: r.id, name: r.name, owner: r.owner,
+        playerCount: r.players.length, maxPlayers: r.maxPlayers, isStarted: !!r.game,
     }));
     broadcast({ type: "room_update", rooms: roomList });
 }
 
-// Stellt den kompletten Zustand eines Raumes zusammen (Spieler, Spielstand etc.)
 function getFullRoomState(room) {
     const gameState = room.game ? room.game.getState() : {};
     return {
-        type: "room_state", id: room.id, name: room.name, ownerId: room.ownerId,
-        players: room.players, playerNames: room.players.map(pId => getUserName(pId)),
+        type: "game_state", id: room.id, name: room.name, owner: room.owner,
+        players: room.players, playerNames: room.players,
         maxPlayers: room.maxPlayers, options: room.options, ...gameState,
     };
 }
 
-// Erstellt einen neuen Raum
 export function createRoom(clientId, name, options) {
-    if (userRooms.has(clientId)) leaveRoom(clientId);
+    const username = getUserName(clientId);
+    if (!username) return;
+    if (userRooms.has(username)) leaveRoom(clientId);
+    
     const roomId = Math.random().toString(36).slice(2, 9);
     const room = {
-        id: roomId, name: name || `Raum von ${getUserName(clientId)}`, ownerId: clientId,
-        players: [clientId], maxPlayers: 2, options, game: null,
+        id: roomId, name: name || `Raum von ${username}`, owner: username,
+        players: [username], maxPlayers: 2, options: options || {}, game: null,
     };
     rooms.set(roomId, room);
-    userRooms.set(clientId, roomId);
-    sendToClient(clientId, getFullRoomState(room));
+    userRooms.set(username, roomId);
+    sendToClient(clientId, { type: "room_created", roomId: room.id });
     broadcastRoomList();
 }
 
-// Lässt einen Spieler einem Raum beitreten
 export function joinRoom(clientId, roomId) {
+    const username = getUserName(clientId);
+    if (!username) return;
     const room = rooms.get(roomId);
     if (!room) return sendToClient(clientId, { type: "error", message: "Raum nicht gefunden." });
-    if (userRooms.has(clientId) && userRooms.get(clientId) !== roomId) leaveRoom(clientId);
-    if (room.players.length >= room.maxPlayers && !room.players.includes(clientId)) return;
-
-    if (!room.players.includes(clientId)) room.players.push(clientId);
-    userRooms.set(clientId, roomId);
+    
+    if (userRooms.has(username) && userRooms.get(username) !== roomId) leaveRoom(clientId);
+    if (!room.players.includes(username)) {
+        if (room.players.length >= room.maxPlayers) return sendToClient(clientId, { type: "error", message: "Raum ist voll." });
+        room.players.push(username);
+    }
+    
+    userRooms.set(username, roomId);
     broadcastToPlayers(room.players, getFullRoomState(room));
     broadcastRoomList();
 }
 
-// Lässt einen Spieler einen Raum verlassen
 export function leaveRoom(clientId) {
-    const roomId = userRooms.get(clientId);
+    const username = getUserName(clientId);
+    if (!username) return;
+    const roomId = userRooms.get(username);
     if (!roomId) return;
+    
     const room = rooms.get(roomId);
-    userRooms.delete(clientId);
+    userRooms.delete(username);
+    
     if (room) {
-        room.players = room.players.filter(pId => pId !== clientId);
+        room.players = room.players.filter(pUsername => pUsername !== username);
         if (room.players.length === 0) {
-            setTimeout(() => { if (room.players.length === 0) rooms.delete(roomId) && broadcastRoomList(); }, 30000);
+            rooms.delete(roomId);
         } else {
-            if (room.ownerId === clientId) room.ownerId = room.players[0];
+            if (room.owner === username) room.owner = room.players[0];
             broadcastToPlayers(room.players, getFullRoomState(room));
         }
     }
     broadcastRoomList();
 }
 
-// Startet das Spiel in einem Raum
 export function startGame(clientId) {
-    const room = userRooms.has(clientId) ? rooms.get(userRooms.get(clientId)) : null;
-    if (room && room.ownerId === clientId && room.players.length > 1) {
+    const username = getUserName(clientId);
+    const room = rooms.get(userRooms.get(username));
+    if (room && room.owner === username && room.players.length > 1) {
         room.game = new Game(room.players, room.options);
         broadcastToPlayers(room.players, getFullRoomState(room));
         broadcastRoomList();
     }
 }
 
-// Verarbeitet eine Spielaktion (Wurf, Undo)
 export function handleGameAction(clientId, action) {
-    const room = userRooms.has(clientId) ? rooms.get(userRooms.get(clientId)) : null;
-    if (room?.game?.handleAction(clientId, action)) {
+    const username = getUserName(clientId);
+    const room = rooms.get(userRooms.get(username));
+    if (room?.game?.handleAction(username, action)) {
         broadcastToPlayers(room.players, getFullRoomState(room));
+        if (room.game.winner) {
+            broadcastRoomList();
+        }
     }
+}
+
+export function handleGlobalChat(clientId, message) {
+    const username = getUserName(clientId);
+    if (username && message) {
+        broadcast({ type: "chat_global", user: username, message: message });
+    }
+}
+
+export function handleCameraStarted(clientId) {
+    const username = getUserName(clientId);
+    const room = rooms.get(userRooms.get(username));
+    if (room) {
+        const opponent = room.players.find(p => p !== username);
+        if (opponent) {
+            sendToUser(opponent, { type: "webrtc_camera_started_by_opponent" });
+        }
+    }
+}
+
+export function handleWebRTCSignal(clientId, payload) {
+    const username = getUserName(clientId);
+    if (!username || !payload || !payload.target) return;
+    payload.from = username; // Füge den Absender hinzu
+    sendToUser(payload.target, { type: "webrtc_signal", payload });
 }

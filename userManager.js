@@ -1,11 +1,10 @@
-// userManager.js (FINAL & COMPLETE)
-const clients = new Map();
-const users = new Map();
-const sockets = new WeakMap();
+// userManager.js (FINAL & CORRECTED)
+const clients = new Map();      // Map<clientId, ws>
+const users = new Map();        // Map<username, { clientId: string }>
+const clientToUser = new Map(); // Map<clientId, username>
 
 function makeClientId() { return Math.random().toString(36).substring(2, 9); }
 
-// Sendet eine Nachricht an ALLE verbundenen Clients
 export function broadcast(obj) {
     const data = JSON.stringify(obj);
     for (const ws of clients.values()) {
@@ -13,50 +12,51 @@ export function broadcast(obj) {
     }
 }
 
-// Sendet die aktuelle Online-Liste an alle
 export function broadcastOnlineList() {
-    console.log("   -> Antwort: Sende Online-Liste an alle Clients...");
-    const userList = Array.from(users.values()).map(u => u.username);
+    const userList = Array.from(users.keys()).filter(u => !u.startsWith('Gast-'));
     broadcast({ type: "online_list", users: userList });
 }
 
-// Fügt einen neuen Benutzer hinzu, wenn eine neue Verbindung aufgebaut wird
 export function addUser(ws) {
     const clientId = makeClientId();
-    const defaultUsername = `Gast-${clientId.slice(0, 5)}`;
     clients.set(clientId, ws);
-    users.set(clientId, { username: defaultUsername });
-    sockets.set(ws, clientId);
-    sendToClient(clientId, { type: "connected", clientId, name: defaultUsername });
-    broadcastOnlineList();
+    sendToClient(clientId, { type: "connected", clientId });
     return clientId;
 }
 
-// Entfernt einen Benutzer bei Verbindungsabbruch
 export function removeUser(clientId) {
     if (!clientId) return false;
+    const username = clientToUser.get(clientId);
     clients.delete(clientId);
-    users.delete(clientId);
+    clientToUser.delete(clientId);
+    if (username && users.get(username)?.clientId === clientId) {
+        users.delete(username);
+    }
     broadcastOnlineList();
     return true;
 }
 
-// Weist einem Benutzer nach dem Login seinen richtigen Namen zu
 export function authenticate(clientId, username) {
     if (!clientId || !username) return false;
-    const user = users.get(clientId);
-    if (user) {
-        user.username = username;
-        sendToClient(clientId, { type: "auth_ok", message: `Authentifiziert als ${username}` });
-        broadcastOnlineList();
+
+    // Alte Verbindung für denselben Benutzernamen trennen
+    if (users.has(username)) {
+        const oldClientId = users.get(username).clientId;
+        const oldSocket = clients.get(oldClientId);
+        if (oldSocket && oldSocket.readyState === 1) {
+            oldSocket.close(4001, "New connection established by the same user");
+        }
     }
-    return !!user;
+    
+    users.set(username, { clientId });
+    clientToUser.set(clientId, username);
+    sendToClient(clientId, { type: "auth_ok", message: `Authentifiziert als ${username}` });
+    broadcastOnlineList();
+    return true;
 }
 
-// Holt den Namen eines Benutzers
-export function getUserName(clientId) { return users.get(clientId)?.username || null; }
+export function getUserName(clientId) { return clientToUser.get(clientId) || null; }
 
-// Sendet eine Nachricht an einen EINZELNEN Client
 export function sendToClient(clientId, obj) {
     const ws = clients.get(clientId);
     if (ws && ws.readyState === 1) {
@@ -66,7 +66,16 @@ export function sendToClient(clientId, obj) {
     return false;
 }
 
-// Sendet eine Nachricht an eine Gruppe von Spielern (z.B. in einem Raum)
-export function broadcastToPlayers(playerIds = [], obj) {
-    for (const pid of playerIds) sendToClient(pid, obj);
+export function sendToUser(username, obj) {
+    const user = users.get(username);
+    if (user) {
+        return sendToClient(user.clientId, obj);
+    }
+    return false;
+}
+
+export function broadcastToPlayers(usernames = [], obj) {
+    for (const username of usernames) {
+        sendToUser(username, obj);
+    }
 }

@@ -1,7 +1,7 @@
-// game.js (FINAL & COMPLETE - CORRECTED VERSION)
+// game.js (FINAL & CORRECTED)
 export default class Game {
     constructor(players, options) {
-        this.players = players;
+        this.players = players; // Array with usernames
         this.options = { startingScore: 501, ...options };
         this.isStarted = true;
         this.winner = null;
@@ -32,18 +32,27 @@ export default class Game {
         if (typeof points !== 'number' || points < 0 || points > 180) return false;
         const username = this.players[this.currentPlayerIndex];
         const newScore = this.scores[username] - points;
-        if (newScore < 0 || newScore === 1) { this.nextPlayer(); return true; }
+        if (newScore < 0 || newScore === 1) { // Bust logic
+            this.nextPlayer();
+            return true;
+        }
         this.scores[username] = newScore;
         this.turnThrows.push(points);
-        if (newScore === 0) { this.winner = username; return true; }
-        if (this.turnThrows.length >= 3) this.nextPlayer();
+        if (newScore === 0) { // Checkout logic (simple version)
+            this.winner = username;
+            return true;
+        }
+        if (this.turnThrows.length >= 3) {
+            this.nextPlayer();
+        }
         return true;
     }
     
     handleUndo() {
         if (this.turnThrows.length === 0) return false;
         const username = this.players[this.currentPlayerIndex];
-        this.scores[username] += this.turnThrows.pop();
+        const lastThrow = this.turnThrows.pop();
+        this.scores[username] += lastThrow;
         return true;
     }
 
