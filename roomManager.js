@@ -1,4 +1,4 @@
-// roomManager.js (FINAL & COMPLETE - mit Owner-Fix)
+// roomManager.js (FINAL & COMPLETE - mit definitivem Owner-Fix)
 import { getUserName, broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
 
@@ -7,7 +7,7 @@ const userRooms = new Map();
 
 // Sendet die aktuelle Raum-Liste an alle
 export function broadcastRoomList() {
-    console.log("   -> Antwort: Sende Raumliste an alle Clients...");
+    // Diese Funktion wird nicht mehr direkt von leaveRoom aufgerufen, um unnötige Updates zu vermeiden
     const roomList = Array.from(rooms.values()).map(r => ({
         id: r.id, name: r.name, owner: getUserName(r.ownerId),
         playerCount: r.players.length, maxPlayers: r.maxPlayers, isStarted: !!r.game?.isStarted,
@@ -52,16 +52,15 @@ export function joinRoom(clientId, roomId) {
     broadcastRoomList();
 }
 
-// Lässt einen Spieler einen Raum verlassen (KORRIGIERTE LOGIK)
+// Lässt einen Spieler einen Raum verlassen
 export function leaveRoom(clientId) {
     const roomId = userRooms.get(clientId);
     if (!roomId) return;
 
     const room = rooms.get(roomId);
-    userRooms.delete(clientId); // Spieler ist keinem Raum mehr zugeordnet
+    userRooms.delete(clientId);
 
     if (room) {
-        // Spieler aus der Spielerliste des Raumes entfernen
         room.players = room.players.filter(pId => pId !== clientId);
 
         if (room.players.length === 0) {
@@ -71,14 +70,19 @@ export function leaveRoom(clientId) {
                 if (currentRoom && currentRoom.players.length === 0) {
                     console.log(`🧹 Leerer Raum ${roomId} wird gelöscht.`);
                     rooms.delete(roomId);
-                    broadcastRoomList(); // Alle über die entfernten Räume informieren
+                    broadcastRoomList();
                 }
-            }, 5000); // 5 Sekunden Wartezeit für eine mögliche Wiederverbindung
+            }, 5000); // 5 Sekunden Wartezeit
         } else {
-            // Wenn noch Spieler im Raum sind, wird nur der Zustand aktualisiert.
-            // WICHTIG: Der Besitzer (`ownerId`) wird NICHT mehr geändert!
+            // ======================================================================
+            // FINALE KORREKTUR: Der Besitzer wird bei einem Verbindungsabbruch
+            // NICHT mehr neu zugewiesen. Der ursprüngliche Ersteller bleibt der Owner.
+            // ======================================================================
+            
+            // Informiere nur die verbleibenden Spieler über den Abgang.
             broadcastToPlayers(room.players, getFullRoomState(room));
-            broadcastRoomList(); // Die Spieleranzahl in der Lobby aktualisieren
+            // Sende auch ein Update an die Lobby (z.B. Spielerzahl 1/2).
+            broadcastRoomList();
         }
     }
 }
