@@ -1,26 +1,24 @@
-// game.js (REVISED & CORRECTED)
+// game.js (FINAL & COMPLETE - CORRECTED VERSION)
 export default class Game {
     constructor(players, options) {
-        this.players = players; // Array mit usernames
+        this.players = players;
         this.options = { startingScore: 501, ...options };
         this.isStarted = true;
         this.winner = null;
         this.currentPlayerIndex = 0;
         this.turnThrows = [];
         this.scores = {};
-        // Initialisiere Scores für jeden username
         players.forEach(username => { this.scores[username] = parseInt(this.options.startingScore); });
     }
 
     getState() {
         return {
             isStarted: this.isStarted, winner: this.winner, scores: this.scores,
-            currentPlayerId: this.players[this.currentPlayerIndex], // Bleibt 'currentPlayerId', enthält aber username
+            currentPlayerId: this.players[this.currentPlayerIndex],
             turnThrows: this.turnThrows,
         };
     }
 
-    // handleAction erwartet jetzt den username
     handleAction(username, action) {
         if (this.winner || username !== this.players[this.currentPlayerIndex]) return false;
         switch (action.type) {

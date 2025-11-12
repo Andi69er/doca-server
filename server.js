@@ -27,7 +27,6 @@ wss.on("connection", (ws) => {
             return;
         }
         
-        // Verbessertes Logging: Zeigt den Benutzernamen an, sobald er bekannt ist.
         const usernameForLog = userManager.getUserName(clientId) || clientId;
         console.log(`[${usernameForLog}] ->`, data);
 
@@ -39,7 +38,7 @@ wss.on("connection", (ws) => {
                 break;
 
             case "chat_global":
-            case "chat": // Unterstützt beide Typen für Abwärtskompatibilität
+            case "chat":
                 const username = userManager.getUserName(clientId) || "Gast";
                 userManager.broadcast({ type: "chat_global", user: username, message: data.message || data.payload?.message });
                 break;
@@ -76,14 +75,10 @@ wss.on("connection", (ws) => {
             case "undo_throw":
                 roomManager.handleGameAction(clientId, data);
                 break;
-
-            // *** WICHTIGE ERGÄNZUNG FÜR VIDEO-SPLIT-SCREEN ***
-            // Dieser Block leitet die WebRTC-Signale (für den Videoanruf)
-            // zwischen den beiden Spielern im Raum weiter.
+            
             case "webrtc_signal": {
                 const targetUsername = data.payload?.target;
                 if (targetUsername && data.payload) {
-                    // Sende das Signal nur an den Ziel-Benutzer
                     userManager.broadcastToPlayers(
                         [targetUsername], 
                         {
@@ -107,9 +102,6 @@ wss.on("connection", (ws) => {
     ws.on("close", () => {
         const usernameForLog = userManager.getUserName(clientId) || clientId;
         console.log(`❌ Client hat die Verbindung getrennt: ${usernameForLog}`);
-        
-        // Diese Funktionen verwenden jetzt die korrekte Logik, um den
-        // Benutzer anhand seiner letzten bekannten clientId zu finden und zu entfernen.
         roomManager.leaveRoom(clientId);
         userManager.removeUser(clientId);
     });
