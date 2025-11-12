@@ -1,4 +1,4 @@
-// server.js (REVISED & ROBUST - WITH FIX)
+// server.js (FINAL & COMPLETE)
 import express from "express";
 import http from "http";
 import cors from "cors";
@@ -12,34 +12,19 @@ app.use(cors());
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-console.log("🚀 REVISED VERSION: Initialisierung des DOCA WebDarts Servers...");
+console.log("🚀 FINAL VERSION: Initialisierung des DOCA WebDarts Servers...");
 
 wss.on("connection", (ws) => {
-    const clientId = userManager.registerConnection(ws);
-    console.log(`✅ Neue Verbindung, temporäre ID: ${clientId}`);
+    const clientId = userManager.addUser(ws);
+    console.log(`✅ Neuer Client verbunden: ${clientId}`);
 
     ws.on("message", (message) => {
         let data;
         try { data = JSON.parse(message); } catch (e) { return; }
-        
-        const usernameForLog = userManager.getUserName(clientId) || clientId;
-        console.log(`[${usernameForLog}] ->`, data);
+        console.log(`[${clientId}] ->`, data);
 
         switch (data.type) {
-            case "auth":
-                const success = userManager.authenticate(clientId, data.payload.username);
-                // Nach erfolgreicher Authentifizierung den Client über seinen Raum informieren, falls er in einem war
-                if (success) {
-                    const roomId = roomManager.getRoomIdForUser(data.payload.username);
-                    if (roomId) {
-                        console.log(`   -> Benutzer ${data.payload.username} wird in Raum ${roomId} wiederhergestellt.`);
-                        // Die Logik zum Senden des Raumstatus ist bereits im roomManager,
-                        // wir müssen nur sicherstellen, dass sie aufgerufen wird.
-                        // Ein erneutes Joinen ist der sauberste Weg.
-                        roomManager.joinRoom(clientId, roomId);
-                    }
-                }
-                break;
+            case "auth": userManager.authenticate(clientId, data.payload.username); break;
             case "chat_global":
             case "chat":
                 const username = userManager.getUserName(clientId) || "Gast";
@@ -49,10 +34,7 @@ wss.on("connection", (ws) => {
             case "list_online": userManager.broadcastOnlineList(); break;
             case "create_room": roomManager.createRoom(clientId, data.payload.name, data.payload.options); break;
             case "join_room": roomManager.joinRoom(clientId, data.payload.roomId); break;
-            case "leave_room":
-                const userToLeave = userManager.getUserName(clientId);
-                if (userToLeave) roomManager.leaveRoom(userToLeave);
-                break;
+            case "leave_room": roomManager.leaveRoom(clientId); break;
             case "start_game": roomManager.startGame(clientId); break;
             case "player_throw":
             case "undo_throw": roomManager.handleGameAction(clientId, data); break;
@@ -62,10 +44,10 @@ wss.on("connection", (ws) => {
     });
 
     ws.on("close", () => {
-        console.log(`❌ Verbindung getrennt: ${clientId}`);
-        const username = userManager.startUserRemoval(clientId);
-        // Die weitere Logik wird nun durch den Timer in userManager.js gehandhabt.
+        console.log(`❌ Client hat die Verbindung getrennt: ${clientId}`);
+        roomManager.leaveRoom(clientId);
+        userManager.removeUser(clientId);
     });
 });
 
-server.listen(PORT, () => console.log(`🚀 REVISED VERSION: DOCA WebDarts Server läuft auf Port ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 FINAL VERSION: DOCA WebDarts Server läuft auf Port ${PORT}`));
