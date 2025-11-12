@@ -1,4 +1,4 @@
-// serverdaten/roomManager.js (FINALE, STABILE VERSION 7.0 - Race-Condition-Fix)
+// serverdaten/roomManager.js (FINALE, STABILE VERSION 8.0 - Tippfehler-Fix)
 import { broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
 
@@ -22,12 +22,13 @@ function getFullRoomState(room) {
         id: room.id, name: room.name, ownerId: room.ownerId,
         players: room.players,
         playerNames: room.playerNames,
-        maxPlayers: r.maxPlayers, options: room.options, ...gameState,
+        maxPlayers: room.maxPlayers, // KORREKTUR: 'r' wurde zu 'room' geändert.
+        options: room.options, ...gameState,
     };
 }
 
 export function createRoom(clientId, ownerUsername, name, options) {
-    if (!ownerUsername || ownerUsername.startsWith('Gast-')) return; // Sicherheitscheck
+    if (!ownerUsername || ownerUsername.startsWith('Gast-')) return;
     if (userRooms.has(clientId)) leaveRoom(clientId);
     const roomId = Math.random().toString(36).slice(2, 9);
     const room = {
@@ -44,7 +45,7 @@ export function createRoom(clientId, ownerUsername, name, options) {
 }
 
 export function joinRoom(clientId, username, roomId) {
-    if (!username || username.startsWith('Gast-')) return; // Sicherheitscheck
+    if (!username || username.startsWith('Gast-')) return;
     const room = rooms.get(roomId);
     if (!room) return;
 
