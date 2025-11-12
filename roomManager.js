@@ -1,4 +1,4 @@
-// serverdaten/roomManager.js (FINALE, STABILE VERSION 8.0 - Tippfehler-Fix)
+// roomManager.js (FINALE, STABILE VERSION 8.0)
 import { broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
 
@@ -22,7 +22,7 @@ function getFullRoomState(room) {
         id: room.id, name: room.name, ownerId: room.ownerId,
         players: room.players,
         playerNames: room.playerNames,
-        maxPlayers: room.maxPlayers, // KORREKTUR: 'r' wurde zu 'room' geändert.
+        maxPlayers: room.maxPlayers, 
         options: room.options, ...gameState,
     };
 }
@@ -55,7 +55,6 @@ export function joinRoom(clientId, username, roomId) {
         room.players[playerIndex] = clientId;
         if(room.ownerUsername === username) room.ownerId = clientId;
         userRooms.set(clientId, roomId);
-        console.log(`[${username}] hat sich neu verbunden in Slot ${playerIndex}.`);
     } else {
         // Fall 2: Neuer Spieler
         const emptyIndex = room.playerNames.indexOf(null);
@@ -63,7 +62,6 @@ export function joinRoom(clientId, username, roomId) {
             room.players[emptyIndex] = clientId;
             room.playerNames[emptyIndex] = username;
             userRooms.set(clientId, roomId);
-            console.log(`[${username}] ist beigetreten in Slot ${emptyIndex}.`);
         }
     }
     broadcastToPlayers(room.players, getFullRoomState(room));
@@ -77,10 +75,15 @@ export function leaveRoom(clientId) {
     const playerIndex = room.players.indexOf(clientId);
 
     if (playerIndex !== -1) {
-        console.log(`[${room.playerNames[playerIndex]}] hat Verbindung getrennt. Slot ${playerIndex} wird reserviert.`);
         room.players[playerIndex] = null;
         userRooms.delete(clientId);
-        broadcastToPlayers(room.players, getFullRoomState(room));
+        
+        // Wenn der Raum danach leer ist, lösche ihn.
+        if (room.players.every(p => p === null)) {
+            rooms.delete(roomId);
+        } else {
+            broadcastToPlayers(room.players, getFullRoomState(room));
+        }
         broadcastRoomList();
     }
 }
