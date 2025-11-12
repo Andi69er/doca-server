@@ -1,13 +1,10 @@
-// roomManager.js (FINAL & STABLE VERSION)
+// roomManager.js (FINAL, STABLE & CORRECTED LOGIC)
 import { getUserName, broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
 
 const rooms = new Map();
 const userRooms = new Map();
 
-// ======================================================================
-// KORREKTUR: Das Wort 'export' wird hier wieder hinzugefügt.
-// ======================================================================
 export function broadcastRoomList() {
     const roomList = Array.from(rooms.values()).map(r => ({
         id: r.id, name: r.name, owner: getUserName(r.ownerId),
@@ -32,6 +29,7 @@ export function createRoom(clientId, name, options) {
     const room = {
         id: roomId, name: name || `Raum von ${getUserName(clientId)}`, 
         players: [clientId], maxPlayers: 2, options, game: null,
+        // Der ownerId wird hier gesetzt und NIE WIEDER GEÄNDERT.
         ownerId: clientId, 
     };
     rooms.set(roomId, room);
@@ -70,8 +68,9 @@ export function leaveRoom(clientId) {
                 }
             }, 5000);
         } else {
-            // Der erste Spieler in der Liste wird ZWINGEND der neue Besitzer.
-            room.ownerId = room.players[0]; 
+            // ======================================================================
+            // DIE FEHLERHAFTE ZEILE WURDE ENTFERNT. Der Besitzer wird nicht mehr geändert.
+            // ======================================================================
             broadcastToPlayers(room.players, getFullRoomState(room));
             broadcastRoomList();
         }
