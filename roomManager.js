@@ -1,4 +1,4 @@
-// roomManager.js (FINAL & COMPLETE)
+// roomManager.js (FINAL & COMPLETE - mit Owner-Fix)
 import { getUserName, broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
 
@@ -52,22 +52,35 @@ export function joinRoom(clientId, roomId) {
     broadcastRoomList();
 }
 
-// Lässt einen Spieler einen Raum verlassen
+// Lässt einen Spieler einen Raum verlassen (KORRIGIERTE LOGIK)
 export function leaveRoom(clientId) {
     const roomId = userRooms.get(clientId);
     if (!roomId) return;
+
     const room = rooms.get(roomId);
-    userRooms.delete(clientId);
+    userRooms.delete(clientId); // Spieler ist keinem Raum mehr zugeordnet
+
     if (room) {
+        // Spieler aus der Spielerliste des Raumes entfernen
         room.players = room.players.filter(pId => pId !== clientId);
+
         if (room.players.length === 0) {
-            setTimeout(() => { if (room.players.length === 0) rooms.delete(roomId) && broadcastRoomList(); }, 30000);
+            // Wenn der Raum leer ist, wird er nach einer kurzen Frist gelöscht
+            setTimeout(() => {
+                const currentRoom = rooms.get(roomId);
+                if (currentRoom && currentRoom.players.length === 0) {
+                    console.log(`🧹 Leerer Raum ${roomId} wird gelöscht.`);
+                    rooms.delete(roomId);
+                    broadcastRoomList(); // Alle über die entfernten Räume informieren
+                }
+            }, 5000); // 5 Sekunden Wartezeit für eine mögliche Wiederverbindung
         } else {
-            if (room.ownerId === clientId) room.ownerId = room.players[0];
+            // Wenn noch Spieler im Raum sind, wird nur der Zustand aktualisiert.
+            // WICHTIG: Der Besitzer (`ownerId`) wird NICHT mehr geändert!
             broadcastToPlayers(room.players, getFullRoomState(room));
+            broadcastRoomList(); // Die Spieleranzahl in der Lobby aktualisieren
         }
     }
-    broadcastRoomList();
 }
 
 // Startet das Spiel in einem Raum
