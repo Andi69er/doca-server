@@ -1,4 +1,4 @@
-// roomManager.js (FINAL & COMPLETE - WITH RESTART-FIX)
+// roomManager.js (FINAL & COMPLETE - WITH RACE-CONDITION-FIX)
 import { getUserName, broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
 
@@ -35,7 +35,7 @@ export function createRoom(clientId, name, options) {
         players: [username], maxPlayers: 2, options, game: null,
     };
     rooms.set(roomId, room);
-    userRooms.set(username, roomId);
+    userRooms.set(username, room.id); // Korrigiert: roomId hier speichern
     sendToClient(clientId, getFullRoomState(room));
     broadcastRoomList();
 }
@@ -46,17 +46,12 @@ export function joinRoom(clientId, roomId) {
 
     let room = rooms.get(roomId);
 
-    // *** SERVER-RESTART-FIX: Wenn Raum nicht existiert, erstelle ihn neu. ***
+    // SERVER-RESTART-FIX: Wenn Raum nicht existiert, erstelle ihn neu.
     if (!room) {
         console.log(`Raum ${roomId} nicht gefunden. Erstelle ihn neu für ${username}.`);
         room = {
-            id: roomId,
-            name: `Raum von ${username}`,
-            owner: username,
-            players: [],
-            maxPlayers: 2,
-            options: { startingScore: 501 },
-            game: null,
+            id: roomId, name: `Neuer Raum`, owner: username,
+            players: [], maxPlayers: 2, options: { startingScore: 501 }, game: null,
         };
         rooms.set(roomId, room);
     }
@@ -69,6 +64,21 @@ export function joinRoom(clientId, roomId) {
 
     if (!room.players.includes(username)) {
         room.players.push(username);
+    }
+
+    // *** NEUE LOGIK ZUR BEHEBUNG DER RACE CONDITION ***
+    // Wenn ein "echter" Benutzer beitritt und der aktuelle Besitzer ein "Gast" ist,
+    // wird der echte Benutzer zum neuen Besitzer befördert.
+    const isGuest = (u) => u.toLowerCase().startsWith('gast');
+    if (!isGuest(username) && isGuest(room.owner)) {
+        console.log(`Benutzer '${username}' wird zum neuen Besitzer befördert (vorher: '${room.owner}').`);
+        room.owner = username;
+        // Setze den neuen Besitzer an den Anfang der Spielerliste für die korrekte Reihenfolge.
+        const playerIndex = room.players.indexOf(username);
+        if (playerIndex > 0) {
+            room.players.splice(playerIndex, 1);
+            room.players.unshift(username);
+        }
     }
     
     userRooms.set(username, roomId);
@@ -95,10 +105,10 @@ export function leaveRoom(clientId) {
                     rooms.delete(roomId);
                     broadcastRoomList();
                 }
-            }, 30000);
+            }, 30000); // Raum nach 30s leeren
         } else {
             if (room.owner === username) {
-                room.owner = room.players[0];
+                room.owner = room.players[0]; // Der verbleibende Spieler wird Besitzer
             }
             broadcastToPlayers(room.players, getFullRoomState(room));
         }
@@ -124,4 +134,3 @@ export function handleGameAction(clientId, action) {
     if (room?.game?.handleAction(username, action)) {
         broadcastToPlayers(room.players, getFullRoomState(room));
     }
-}
