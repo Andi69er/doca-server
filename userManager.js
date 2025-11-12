@@ -1,4 +1,4 @@
-// serverdaten/userManager.js (FINALE, ROBUSTE VERSION)
+// serverdaten/userManager.js (FINALE, STABILE VERSION)
 const clients = new Map(); // clientId -> ws
 const users = new Map(); // clientId -> { username }
 const sockets = new WeakMap(); // ws -> clientId
@@ -15,7 +15,7 @@ export function broadcast(obj) {
 export function broadcastOnlineList() {
     const userList = Array.from(users.values())
         .map(u => u.username)
-        .filter((name, index, self) => self.indexOf(name) === index && !name.startsWith('Gast-')); // Nur eingeloggte, eindeutige Namen
+        .filter((name, index, self) => self.indexOf(name) === index && !name.startsWith('Gast-'));
     broadcast({ type: "online_list", users: userList });
 }
 
@@ -29,12 +29,13 @@ export function addUser(ws) {
     return clientId;
 }
 
-export function removeUser(clientId) {
-    if (!clientId) return false;
+export function removeUser(ws) {
+    const clientId = sockets.get(ws);
+    if (!clientId) return;
+    sockets.delete(ws);
     clients.delete(clientId);
     users.delete(clientId);
     broadcastOnlineList();
-    return true;
 }
 
 export function authenticate(clientId, username) {
@@ -51,16 +52,6 @@ export function authenticate(clientId, username) {
 
 export function getUserName(clientId) { return users.get(clientId)?.username || null; }
 
-// NEUE, WICHTIGE FUNKTION
-export function getClientIdByUsername(username) {
-    for (const [clientId, user] of users.entries()) {
-        if (user.username === username) {
-            return clientId;
-        }
-    }
-    return null;
-}
-
 export function sendToClient(clientId, obj) {
     const ws = clients.get(clientId);
     if (ws && ws.readyState === 1) {
@@ -71,5 +62,11 @@ export function sendToClient(clientId, obj) {
 }
 
 export function broadcastToPlayers(playerIds = [], obj) {
-    for (const pid of playerIds) sendToClient(pid, obj);
+    for (const pid of playerIds) {
+        if(pid) sendToClient(pid, obj);
+    }
+}
+
+export function getClientId(ws) {
+    return sockets.get(ws);
 }

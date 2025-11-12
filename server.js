@@ -1,4 +1,4 @@
-// server.js (FINALE, ROBUSTE VERSION mit Heartbeat)
+// server.js (FINALE, STABILE VERSION mit Heartbeat)
 import express from "express";
 import http from "http";
 import cors from "cors";
@@ -12,11 +12,11 @@ app.use(cors());
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-console.log("🚀 FINALE ROBUSTE VERSION: Initialisierung des DOCA WebDarts Servers...");
+console.log("🚀 FINALE STABILE VERSION: DOCA WebDarts Server wird initialisiert...");
 
 wss.on("connection", (ws) => {
     const clientId = userManager.addUser(ws);
-    console.log(`✅ Neuer Client verbunden: ${clientId}`);
+    console.log(`✅ Client verbunden: ${clientId}`);
 
     ws.isAlive = true;
     ws.on('pong', () => { ws.isAlive = true; });
@@ -26,19 +26,17 @@ wss.on("connection", (ws) => {
         try { data = JSON.parse(message); } catch (e) { return; }
         
         if (data.type !== 'ping') console.log(`[${clientId}] ->`, data);
-
-        const username = userManager.getUserName(clientId);
-
+        
         switch (data.type) {
             case "auth":
                 const authUsername = data.payload.username;
                 if (userManager.authenticate(clientId, authUsername)) {
-                    // ZENTRALE KORREKTUR: Sage dem RoomManager, dass sich dieser User neu verbunden hat
                     roomManager.updateUserConnection(authUsername, clientId);
                 }
                 break;
             case "chat_global":
-                userManager.broadcast({ type: "chat_global", user: username || "Gast", message: data.payload?.message });
+                const username = userManager.getUserName(clientId);
+                userManager.broadcast({ type: "chat_global", user: username || "Gast", payload: data.payload });
                 break;
             case "list_rooms": roomManager.broadcastRoomList(); break;
             case "create_room": roomManager.createRoom(clientId, data.payload.name, data.payload.options); break;
@@ -53,33 +51,31 @@ wss.on("connection", (ws) => {
                 if (targetClientId) {
                     userManager.sendToClient(targetClientId, {
                         type: 'webrtc_signal',
-                        payload: { ...data.payload, target: null, sender: clientId } 
+                        payload: { ...data.payload, sender: clientId, target: null } 
                     });
                 }
                 break;
 
             case "ping": userManager.sendToClient(clientId, { type: "pong" }); break;
-            default: console.warn(`⚠️ Unbekannter Nachrichtentyp: ${data.type}`);
         }
     });
 
     ws.on("close", () => {
-        console.log(`❌ Client hat die Verbindung getrennt: ${clientId}`);
-        roomManager.leaveRoom(clientId);
-        userManager.removeUser(clientId);
+        const closedClientId = userManager.getClientId(ws);
+        console.log(`❌ Client hat die Verbindung getrennt: ${closedClientId}`);
+        roomManager.leaveRoom(closedClientId);
+        userManager.removeUser(ws);
     });
 });
 
-const interval = setInterval(function ping() {
-  wss.clients.forEach(function each(ws) {
+const interval = setInterval(() => {
+  wss.clients.forEach((ws) => {
     if (ws.isAlive === false) return ws.terminate();
     ws.isAlive = false;
     ws.ping(() => {});
   });
 }, 30000);
 
-wss.on('close', function close() {
-  clearInterval(interval);
-});
+wss.on('close', () => { clearInterval(interval); });
 
-server.listen(PORT, () => console.log(`🚀 FINALE ROBUSTE VERSION: Server läuft auf Port ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 FINALE STABILE VERSION: Server läuft auf Port ${PORT}`));
