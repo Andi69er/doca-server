@@ -1,4 +1,4 @@
-// serverdaten/roomManager.js (FINALE, STABILE VERSION 3.0 - Crash-Fix)
+// serverdaten/roomManager.js (FINALE, STABILE VERSION 4.0 - Namens-Fix)
 import { getUserName, broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
 
@@ -16,35 +16,18 @@ export function broadcastRoomList() {
 function getFullRoomState(room) {
     if (!room) return null;
     const gameState = room.game ? room.game.getState() : {};
+
+    // KERNKORREKTUR: Die Namensliste wird bei JEDEM Update frisch aus den IDs generiert.
+    // Das verhindert, dass jemals veraltete oder falsche Namen gesendet werden.
+    const currentNames = room.players.map(pId => pId ? getUserName(pId) : null);
+
     return {
         type: "game_state",
         id: room.id, name: room.name, ownerId: room.ownerId,
-        players: room.players,
-        playerNames: room.playerNames,
+        players: room.players, // Die IDs
+        playerNames: currentNames, // Die frisch nachgeschlagenen, korrekten Namen
         maxPlayers: room.maxPlayers, options: room.options, ...gameState,
     };
-}
-
-// DIESE FUNKTION HAT GEFEHLT UND WIRD JETZT KORREKT EXPORTIERT
-export function updateUserConnection(username, newClientId) {
-    for (const room of rooms.values()) {
-        const playerIndex = room.playerNames.indexOf(username);
-        if (playerIndex !== -1) {
-            // Spieler in einem Raum gefunden, aktualisiere seine Verbindungs-ID
-            const oldClientId = room.players[playerIndex];
-            if(oldClientId) userRooms.delete(oldClientId);
-            
-            room.players[playerIndex] = newClientId;
-            userRooms.set(newClientId, room.id);
-
-            if (room.ownerUsername === username) {
-                room.ownerId = newClientId; // Wichtig: auch die ownerId aktualisieren
-            }
-            console.log(`[${username}] hat sich neu verbunden. Slot ${playerIndex} in Raum ${room.id} aktualisiert.`);
-            broadcastToPlayers(room.players, getFullRoomState(room));
-            return;
-        }
-    }
 }
 
 export function createRoom(clientId, name, options) {
@@ -55,7 +38,7 @@ export function createRoom(clientId, name, options) {
         id: roomId, name: name || `Raum von ${ownerUsername}`,
         ownerId: clientId, ownerUsername: ownerUsername,
         players: [clientId, null],
-        playerNames: [ownerUsername, null],
+        playerNames: [ownerUsername, null], // Initial korrekt setzen
         maxPlayers: 2, options: { ...options, startingScore: options.distance }, game: null,
     };
     rooms.set(roomId, room);
@@ -69,17 +52,25 @@ export function joinRoom(clientId, roomId) {
     if (!room) return;
     const username = getUserName(clientId);
 
-    // Wenn der Spieler schon drin ist (durch updateUserConnection), nichts tun
-    if (room.playerNames.includes(username)) return;
-
-    const emptyIndex = room.playerNames.indexOf(null);
-    if (emptyIndex !== -1) {
-        room.players[emptyIndex] = clientId;
-        room.playerNames[emptyIndex] = username;
+    const playerIndex = room.playerNames.indexOf(username);
+    if (playerIndex !== -1) {
+        // Spieler verbindet sich neu (Name ist schon im Raum)
+        room.players[playerIndex] = clientId;
+        if(room.ownerUsername === username) room.ownerId = clientId;
         userRooms.set(clientId, roomId);
-        broadcastToPlayers(room.players, getFullRoomState(room));
-        broadcastRoomList();
+        console.log(`[${username}] hat sich neu verbunden in Slot ${playerIndex}.`);
+    } else {
+        // Neuer Spieler, freien Platz suchen
+        const emptyIndex = room.playerNames.indexOf(null);
+        if (emptyIndex !== -1) {
+            room.players[emptyIndex] = clientId;
+            room.playerNames[emptyIndex] = username;
+            userRooms.set(clientId, roomId);
+            console.log(`[${username}] ist beigetreten in Slot ${emptyIndex}.`);
+        }
     }
+    broadcastToPlayers(room.players, getFullRoomState(room));
+    broadcastRoomList();
 }
 
 export function leaveRoom(clientId) {
@@ -89,9 +80,8 @@ export function leaveRoom(clientId) {
     const playerIndex = room.players.indexOf(clientId);
 
     if (playerIndex !== -1) {
-        const username = room.playerNames[playerIndex];
-        console.log(`[${username}] hat Verbindung getrennt. Slot ${playerIndex} wird reserviert.`);
-        room.players[playerIndex] = null; // Nur die ID entfernen, der Name reserviert den Platz
+        console.log(`[${room.playerNames[playerIndex]}] hat Verbindung getrennt. Slot ${playerIndex} wird reserviert.`);
+        room.players[playerIndex] = null; // ID entfernen, aber Name als Platzhalter belassen
         userRooms.delete(clientId);
         broadcastRoomList();
     }
