@@ -1,5 +1,5 @@
-// serverdaten/roomManager.js (FINALE, STABILE VERSION 6.0 - Namens-Fix)
-import { getUserName, broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
+// serverdaten/roomManager.js (FINALE, STABILE VERSION 7.0 - Race-Condition-Fix)
+import { broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
 
 const rooms = new Map();
@@ -8,7 +8,7 @@ const userRooms = new Map(); // clientId -> roomId
 export function broadcastRoomList() {
     const roomList = Array.from(rooms.values()).map(r => ({
         id: r.id, name: r.name, owner: r.ownerUsername,
-        playerCount: r.playerNames.filter(p => p).length, // Zähle die Namen, nicht die IDs
+        playerCount: r.playerNames.filter(p => p).length,
         maxPlayers: r.maxPlayers, isStarted: !!r.game?.isStarted,
     }));
     broadcast({ type: "room_update", rooms: roomList });
@@ -17,27 +17,24 @@ export function broadcastRoomList() {
 function getFullRoomState(room) {
     if (!room) return null;
     const gameState = room.game ? room.game.getState() : {};
-    
-    // KERNKORREKTUR: Wir verwenden die im Raum gespeicherte playerNames-Liste als
-    // garantierte Quelle der Wahrheit. Kein fehleranfälliges Nachschlagen mehr.
     return {
         type: "game_state",
         id: room.id, name: room.name, ownerId: room.ownerId,
         players: room.players,
-        playerNames: room.playerNames, // Diese Liste wird jetzt direkt verwendet.
-        maxPlayers: room.maxPlayers, options: room.options, ...gameState,
+        playerNames: room.playerNames,
+        maxPlayers: r.maxPlayers, options: room.options, ...gameState,
     };
 }
 
-export function createRoom(clientId, name, options) {
+export function createRoom(clientId, ownerUsername, name, options) {
+    if (!ownerUsername || ownerUsername.startsWith('Gast-')) return; // Sicherheitscheck
     if (userRooms.has(clientId)) leaveRoom(clientId);
-    const ownerUsername = getUserName(clientId);
     const roomId = Math.random().toString(36).slice(2, 9);
     const room = {
         id: roomId, name: name || `Raum von ${ownerUsername}`,
         ownerId: clientId, ownerUsername: ownerUsername,
         players: [clientId, null],
-        playerNames: [ownerUsername, null], // Die Namensliste wird hier initial korrekt erstellt.
+        playerNames: [ownerUsername, null],
         maxPlayers: 2, options: { ...options, startingScore: options.distance }, game: null,
     };
     rooms.set(roomId, room);
@@ -46,10 +43,10 @@ export function createRoom(clientId, name, options) {
     sendToClient(clientId, { type: "room_created", roomId: roomId });
 }
 
-export function joinRoom(clientId, roomId) {
+export function joinRoom(clientId, username, roomId) {
+    if (!username || username.startsWith('Gast-')) return; // Sicherheitscheck
     const room = rooms.get(roomId);
     if (!room) return;
-    const username = getUserName(clientId);
 
     const playerIndex = room.playerNames.indexOf(username);
     if (playerIndex !== -1) {
@@ -63,7 +60,7 @@ export function joinRoom(clientId, roomId) {
         const emptyIndex = room.playerNames.indexOf(null);
         if (emptyIndex !== -1) {
             room.players[emptyIndex] = clientId;
-            room.playerNames[emptyIndex] = username; // Der Name wird hier dem Slot zugewiesen.
+            room.playerNames[emptyIndex] = username;
             userRooms.set(clientId, roomId);
             console.log(`[${username}] ist beigetreten in Slot ${emptyIndex}.`);
         }
@@ -80,9 +77,9 @@ export function leaveRoom(clientId) {
 
     if (playerIndex !== -1) {
         console.log(`[${room.playerNames[playerIndex]}] hat Verbindung getrennt. Slot ${playerIndex} wird reserviert.`);
-        room.players[playerIndex] = null; // ID entfernen, aber der Name im playerNames-Array bleibt als Platzhalter.
+        room.players[playerIndex] = null;
         userRooms.delete(clientId);
-        broadcastToPlayers(room.players, getFullRoomState(room)); // Informiere die anderen Spieler
+        broadcastToPlayers(room.players, getFullRoomState(room));
         broadcastRoomList();
     }
 }
@@ -90,7 +87,6 @@ export function leaveRoom(clientId) {
 export function startGame(clientId) {
     const room = userRooms.has(clientId) ? rooms.get(userRooms.get(clientId)) : null;
     if (room && room.ownerId === clientId && room.players.filter(p=>p).length > 1) {
-        // Nur die aktiven Client-IDs an das Spiel übergeben
         room.game = new Game(room.players.filter(p=>p), room.options);
         broadcastToPlayers(room.players, getFullRoomState(room));
     }

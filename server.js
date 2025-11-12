@@ -1,4 +1,4 @@
-// server.js (FINALE, STABILE VERSION 5.0 - Crash-Fix)
+// server.js (FINALE, STABILE VERSION 7.0 - Race-Condition-Fix)
 import express from "express";
 import http from "http";
 import cors from "cors";
@@ -12,7 +12,7 @@ app.use(cors());
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-console.log("🚀 FINALE STABILE VERSION 5.0: Server wird initialisiert...");
+console.log("🚀 FINALE STABILE VERSION 7.0: Server wird initialisiert...");
 
 wss.on("connection", (ws) => {
     const clientId = userManager.addUser(ws);
@@ -29,16 +29,21 @@ wss.on("connection", (ws) => {
         
         switch (data.type) {
             case "auth":
-                // KERNÄNDERUNG: Nur noch authentifizieren. Der fehlerhafte Aufruf ist entfernt.
                 userManager.authenticate(clientId, data.payload.username);
                 break;
             case "chat_global":
-                const username = userManager.getUserName(clientId);
-                userManager.broadcast({ type: "chat_global", user: username || "Gast", payload: data.payload });
+                const chatUsername = userManager.getUserName(clientId);
+                userManager.broadcast({ type: "chat_global", user: chatUsername || "Gast", payload: data.payload });
                 break;
             case "list_rooms": roomManager.broadcastRoomList(); break;
-            case "create_room": roomManager.createRoom(clientId, data.payload.name, data.payload.options); break;
-            case "join_room": roomManager.joinRoom(clientId, data.payload.roomId); break;
+            case "create_room":
+                const creatorUsername = userManager.getUserName(clientId);
+                roomManager.createRoom(clientId, creatorUsername, data.payload.name, data.payload.options);
+                break;
+            case "join_room":
+                const joinerUsername = userManager.getUserName(clientId);
+                roomManager.joinRoom(clientId, joinerUsername, data.payload.roomId);
+                break;
             case "leave_room": roomManager.leaveRoom(clientId); break;
             case "start_game": roomManager.startGame(clientId); break;
             case "player_throw":
@@ -78,4 +83,4 @@ const interval = setInterval(() => {
 
 wss.on('close', () => { clearInterval(interval); });
 
-server.listen(PORT, () => console.log(`🚀 FINALE STABILE VERSION 5.0: Server läuft auf Port ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 FINALE STABILE VERSION 7.0: Server läuft auf Port ${PORT}`));
