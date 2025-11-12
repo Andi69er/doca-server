@@ -1,4 +1,4 @@
-// server.js (FINALE, STABILE VERSION mit Heartbeat)
+// server.js (FINALE, STABILE VERSION 5.0 - Crash-Fix)
 import express from "express";
 import http from "http";
 import cors from "cors";
@@ -12,7 +12,7 @@ app.use(cors());
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-console.log("🚀 FINALE STABILE VERSION: DOCA WebDarts Server wird initialisiert...");
+console.log("🚀 FINALE STABILE VERSION 5.0: Server wird initialisiert...");
 
 wss.on("connection", (ws) => {
     const clientId = userManager.addUser(ws);
@@ -29,10 +29,8 @@ wss.on("connection", (ws) => {
         
         switch (data.type) {
             case "auth":
-                const authUsername = data.payload.username;
-                if (userManager.authenticate(clientId, authUsername)) {
-                    roomManager.updateUserConnection(authUsername, clientId);
-                }
+                // KERNÄNDERUNG: Nur noch authentifizieren. Der fehlerhafte Aufruf ist entfernt.
+                userManager.authenticate(clientId, data.payload.username);
                 break;
             case "chat_global":
                 const username = userManager.getUserName(clientId);
@@ -62,9 +60,11 @@ wss.on("connection", (ws) => {
 
     ws.on("close", () => {
         const closedClientId = userManager.getClientId(ws);
-        console.log(`❌ Client hat die Verbindung getrennt: ${closedClientId}`);
-        roomManager.leaveRoom(closedClientId);
-        userManager.removeUser(ws);
+        if(closedClientId) {
+            console.log(`❌ Client hat die Verbindung getrennt: ${closedClientId}`);
+            roomManager.leaveRoom(closedClientId);
+            userManager.removeUser(ws);
+        }
     });
 });
 
@@ -78,4 +78,4 @@ const interval = setInterval(() => {
 
 wss.on('close', () => { clearInterval(interval); });
 
-server.listen(PORT, () => console.log(`🚀 FINALE STABILE VERSION: Server läuft auf Port ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 FINALE STABILE VERSION 5.0: Server läuft auf Port ${PORT}`));
