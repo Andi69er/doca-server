@@ -1,7 +1,7 @@
-// userManager.js (FINAL & CORRECTED)
-const clients = new Map();      // Map<clientId, ws>
-const users = new Map();        // Map<username, { clientId: string }>
-const clientToUser = new Map(); // Map<clientId, username>
+// serverdaten/userManager.js (FINALE, ROBUSTE VERSION)
+const clients = new Map(); // clientId -> ws
+const users = new Map(); // clientId -> { username }
+const sockets = new WeakMap(); // ws -> clientId
 
 function makeClientId() { return Math.random().toString(36).substring(2, 9); }
 
@@ -13,49 +13,53 @@ export function broadcast(obj) {
 }
 
 export function broadcastOnlineList() {
-    const userList = Array.from(users.keys()).filter(u => !u.startsWith('Gast-'));
+    const userList = Array.from(users.values())
+        .map(u => u.username)
+        .filter((name, index, self) => self.indexOf(name) === index && !name.startsWith('Gast-')); // Nur eingeloggte, eindeutige Namen
     broadcast({ type: "online_list", users: userList });
 }
 
 export function addUser(ws) {
     const clientId = makeClientId();
+    const defaultUsername = `Gast-${clientId.slice(0, 5)}`;
     clients.set(clientId, ws);
-    sendToClient(clientId, { type: "connected", clientId });
+    users.set(clientId, { username: defaultUsername });
+    sockets.set(ws, clientId);
+    sendToClient(clientId, { type: "connected", clientId, name: defaultUsername });
     return clientId;
 }
 
 export function removeUser(clientId) {
     if (!clientId) return false;
-    const username = clientToUser.get(clientId);
     clients.delete(clientId);
-    clientToUser.delete(clientId);
-    if (username && users.get(username)?.clientId === clientId) {
-        users.delete(username);
-    }
+    users.delete(clientId);
     broadcastOnlineList();
     return true;
 }
 
 export function authenticate(clientId, username) {
     if (!clientId || !username) return false;
-
-    // Alte Verbindung für denselben Benutzernamen trennen
-    if (users.has(username)) {
-        const oldClientId = users.get(username).clientId;
-        const oldSocket = clients.get(oldClientId);
-        if (oldSocket && oldSocket.readyState === 1) {
-            oldSocket.close(4001, "New connection established by the same user");
-        }
+    const user = users.get(clientId);
+    if (user) {
+        user.username = username;
+        sendToClient(clientId, { type: "auth_ok", message: `Authentifiziert als ${username}`, clientId });
+        broadcastOnlineList();
+        return true;
     }
-    
-    users.set(username, { clientId });
-    clientToUser.set(clientId, username);
-    sendToClient(clientId, { type: "auth_ok", message: `Authentifiziert als ${username}` });
-    broadcastOnlineList();
-    return true;
+    return false;
 }
 
-export function getUserName(clientId) { return clientToUser.get(clientId) || null; }
+export function getUserName(clientId) { return users.get(clientId)?.username || null; }
+
+// NEUE, WICHTIGE FUNKTION
+export function getClientIdByUsername(username) {
+    for (const [clientId, user] of users.entries()) {
+        if (user.username === username) {
+            return clientId;
+        }
+    }
+    return null;
+}
 
 export function sendToClient(clientId, obj) {
     const ws = clients.get(clientId);
@@ -66,16 +70,6 @@ export function sendToClient(clientId, obj) {
     return false;
 }
 
-export function sendToUser(username, obj) {
-    const user = users.get(username);
-    if (user) {
-        return sendToClient(user.clientId, obj);
-    }
-    return false;
-}
-
-export function broadcastToPlayers(usernames = [], obj) {
-    for (const username of usernames) {
-        sendToUser(username, obj);
-    }
+export function broadcastToPlayers(playerIds = [], obj) {
+    for (const pid of playerIds) sendToClient(pid, obj);
 }
