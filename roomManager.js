@@ -1,13 +1,11 @@
-// roomManager.js (FINAL & COMPLETE - mit definitivem Owner-Fix)
+// roomManager.js (FINAL & ROBUST VERSION)
 import { getUserName, broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
 
 const rooms = new Map();
 const userRooms = new Map();
 
-// Sendet die aktuelle Raum-Liste an alle
-export function broadcastRoomList() {
-    // Diese Funktion wird nicht mehr direkt von leaveRoom aufgerufen, um unnötige Updates zu vermeiden
+function broadcastRoomList() {
     const roomList = Array.from(rooms.values()).map(r => ({
         id: r.id, name: r.name, owner: getUserName(r.ownerId),
         playerCount: r.players.length, maxPlayers: r.maxPlayers, isStarted: !!r.game?.isStarted,
@@ -15,8 +13,8 @@ export function broadcastRoomList() {
     broadcast({ type: "room_update", rooms: roomList });
 }
 
-// Stellt den kompletten Zustand eines Raumes zusammen (Spieler, Spielstand etc.)
 function getFullRoomState(room) {
+    if (!room) return null;
     const gameState = room.game ? room.game.getState() : {};
     return {
         type: "room_state", id: room.id, name: room.name, ownerId: room.ownerId,
@@ -25,13 +23,13 @@ function getFullRoomState(room) {
     };
 }
 
-// Erstellt einen neuen Raum
 export function createRoom(clientId, name, options) {
     if (userRooms.has(clientId)) leaveRoom(clientId);
     const roomId = Math.random().toString(36).slice(2, 9);
     const room = {
-        id: roomId, name: name || `Raum von ${getUserName(clientId)}`, ownerId: clientId,
+        id: roomId, name: name || `Raum von ${getUserName(clientId)}`, 
         players: [clientId], maxPlayers: 2, options, game: null,
+        ownerId: clientId, // Der Ersteller ist der erste Besitzer
     };
     rooms.set(roomId, room);
     userRooms.set(clientId, roomId);
@@ -39,11 +37,10 @@ export function createRoom(clientId, name, options) {
     broadcastRoomList();
 }
 
-// Lässt einen Spieler einem Raum beitreten
 export function joinRoom(clientId, roomId) {
     const room = rooms.get(roomId);
     if (!room) return sendToClient(clientId, { type: "error", message: "Raum nicht gefunden." });
-    if (userRooms.has(clientId) && userRooms.get(clientId) !== roomId) leaveRoom(clientId);
+    if (userRooms.has(clientId)) leaveRoom(clientId);
     if (room.players.length >= room.maxPlayers && !room.players.includes(clientId)) return;
 
     if (!room.players.includes(clientId)) room.players.push(clientId);
@@ -52,11 +49,9 @@ export function joinRoom(clientId, roomId) {
     broadcastRoomList();
 }
 
-// Lässt einen Spieler einen Raum verlassen
 export function leaveRoom(clientId) {
     const roomId = userRooms.get(clientId);
     if (!roomId) return;
-
     const room = rooms.get(roomId);
     userRooms.delete(clientId);
 
@@ -64,30 +59,28 @@ export function leaveRoom(clientId) {
         room.players = room.players.filter(pId => pId !== clientId);
 
         if (room.players.length === 0) {
-            // Wenn der Raum leer ist, wird er nach einer kurzen Frist gelöscht
+            // Raum ist jetzt leer, nach kurzer Zeit löschen
             setTimeout(() => {
                 const currentRoom = rooms.get(roomId);
                 if (currentRoom && currentRoom.players.length === 0) {
-                    console.log(`🧹 Leerer Raum ${roomId} wird gelöscht.`);
                     rooms.delete(roomId);
                     broadcastRoomList();
                 }
-            }, 5000); // 5 Sekunden Wartezeit
+            }, 5000);
         } else {
             // ======================================================================
-            // FINALE KORREKTUR: Der Besitzer wird bei einem Verbindungsabbruch
-            // NICHT mehr neu zugewiesen. Der ursprüngliche Ersteller bleibt der Owner.
+            // DIE ENTSCHEIDENDE ÄNDERUNG:
+            // Der erste Spieler in der Liste wird ZWINGEND der neue Besitzer.
             // ======================================================================
+            room.ownerId = room.players[0]; 
             
-            // Informiere nur die verbleibenden Spieler über den Abgang.
+            // Informiere die verbleibenden Spieler über den neuen Zustand.
             broadcastToPlayers(room.players, getFullRoomState(room));
-            // Sende auch ein Update an die Lobby (z.B. Spielerzahl 1/2).
             broadcastRoomList();
         }
     }
 }
 
-// Startet das Spiel in einem Raum
 export function startGame(clientId) {
     const room = userRooms.has(clientId) ? rooms.get(userRooms.get(clientId)) : null;
     if (room && room.ownerId === clientId && room.players.length > 1) {
@@ -97,7 +90,6 @@ export function startGame(clientId) {
     }
 }
 
-// Verarbeitet eine Spielaktion (Wurf, Undo)
 export function handleGameAction(clientId, action) {
     const room = userRooms.has(clientId) ? rooms.get(userRooms.get(clientId)) : null;
     if (room?.game?.handleAction(clientId, action)) {
