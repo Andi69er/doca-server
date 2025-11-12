@@ -1,11 +1,14 @@
-// roomManager.js (FINAL & ROBUST VERSION)
+// roomManager.js (FINAL & STABLE VERSION)
 import { getUserName, broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
 
 const rooms = new Map();
 const userRooms = new Map();
 
-function broadcastRoomList() {
+// ======================================================================
+// KORREKTUR: Das Wort 'export' wird hier wieder hinzugefügt.
+// ======================================================================
+export function broadcastRoomList() {
     const roomList = Array.from(rooms.values()).map(r => ({
         id: r.id, name: r.name, owner: getUserName(r.ownerId),
         playerCount: r.players.length, maxPlayers: r.maxPlayers, isStarted: !!r.game?.isStarted,
@@ -29,7 +32,7 @@ export function createRoom(clientId, name, options) {
     const room = {
         id: roomId, name: name || `Raum von ${getUserName(clientId)}`, 
         players: [clientId], maxPlayers: 2, options, game: null,
-        ownerId: clientId, // Der Ersteller ist der erste Besitzer
+        ownerId: clientId, 
     };
     rooms.set(roomId, room);
     userRooms.set(clientId, roomId);
@@ -59,7 +62,6 @@ export function leaveRoom(clientId) {
         room.players = room.players.filter(pId => pId !== clientId);
 
         if (room.players.length === 0) {
-            // Raum ist jetzt leer, nach kurzer Zeit löschen
             setTimeout(() => {
                 const currentRoom = rooms.get(roomId);
                 if (currentRoom && currentRoom.players.length === 0) {
@@ -68,13 +70,8 @@ export function leaveRoom(clientId) {
                 }
             }, 5000);
         } else {
-            // ======================================================================
-            // DIE ENTSCHEIDENDE ÄNDERUNG:
             // Der erste Spieler in der Liste wird ZWINGEND der neue Besitzer.
-            // ======================================================================
             room.ownerId = room.players[0]; 
-            
-            // Informiere die verbleibenden Spieler über den neuen Zustand.
             broadcastToPlayers(room.players, getFullRoomState(room));
             broadcastRoomList();
         }

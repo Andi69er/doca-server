@@ -1,4 +1,4 @@
-// server.js (FINAL & COMPLETE - mit WebRTC-Fix)
+// server.js (FINAL & STABLE VERSION)
 import express from "express";
 import http from "http";
 import cors from "cors";
@@ -14,14 +14,12 @@ const wss = new WebSocketServer({ server });
 
 console.log("🚀 FINAL VERSION: Initialisierung des DOCA WebDarts Servers...");
 
-// Heartbeat-Mechanismus zum Bereinigen toter Verbindungen
+// Heartbeat-Mechanismus
 const interval = setInterval(() => {
     wss.clients.forEach((ws) => {
         // @ts-ignore
         if (ws.isAlive === false) {
             // @ts-ignore
-            const clientId = ws.clientId;
-            console.log(`💔 Heartbeat: Beende tote Verbindung für Client ${clientId || 'unbekannt'}`);
             return ws.terminate();
         }
         // @ts-ignore
@@ -40,13 +38,10 @@ wss.on("connection", (ws) => {
     // @ts-ignore
     ws.clientId = clientId;
     
-    console.log(`✅ Neuer Client verbunden: ${clientId}`);
-
     ws.on("message", (message) => {
         let data;
         try { data = JSON.parse(message); } catch (e) { return; }
-        console.log(`[${clientId}] ->`, data);
-
+        
         switch (data.type) {
             case "auth": userManager.authenticate(clientId, data.payload.username); break;
             case "chat_global":
@@ -62,29 +57,15 @@ wss.on("connection", (ws) => {
             case "start_game": roomManager.startGame(clientId); break;
             case "player_throw":
             case "undo_throw": roomManager.handleGameAction(clientId, data); break;
-            
-            // =======================================================
-            // KORREKTUR: Fehlender Fall für WebRTC-Signalisierung
-            // Dieser Block leitet die Video-Handshake-Nachrichten weiter.
-            // =======================================================
-            case "webrtc_signal": {
+            case "webrtc_signal":
                 const targetId = data.payload?.target;
-                if (targetId) {
-                    // Leite die Nachricht 1-zu-1 an den Ziel-Client weiter
-                    userManager.sendToClient(targetId, data);
-                } else {
-                    console.warn(`[${clientId}] sendete webrtc_signal ohne targetId.`);
-                }
+                if (targetId) userManager.sendToClient(targetId, data);
                 break;
-            }
-
             case "ping": userManager.sendToClient(clientId, { type: "pong" }); break;
-            default: console.warn(`⚠️ Unbekannter Nachrichtentyp: ${data.type}`);
         }
     });
 
     ws.on("close", () => {
-        console.log(`❌ Client hat die Verbindung getrennt: ${clientId}`);
         roomManager.leaveRoom(clientId);
         userManager.removeUser(clientId);
     });
