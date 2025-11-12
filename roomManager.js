@@ -1,4 +1,4 @@
-// roomManager.js (FINALE, STABILE VERSION 8.0)
+// roomManager.js (FINALE, STABILE VERSION 9.0)
 import { broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
 
@@ -28,7 +28,7 @@ function getFullRoomState(room) {
 }
 
 export function createRoom(clientId, ownerUsername, name, options) {
-    if (!ownerUsername || ownerUsername.startsWith('Gast-')) return;
+    if (!ownerUsername) { console.log("Raumerstellung abgebrochen: Kein Benutzername."); return; }
     if (userRooms.has(clientId)) leaveRoom(clientId);
     const roomId = Math.random().toString(36).slice(2, 9);
     const room = {
@@ -45,7 +45,7 @@ export function createRoom(clientId, ownerUsername, name, options) {
 }
 
 export function joinRoom(clientId, username, roomId) {
-    if (!username || username.startsWith('Gast-')) return;
+    if (!username) { console.log("Beitritt abgebrochen: Kein Benutzername."); return; }
     const room = rooms.get(roomId);
     if (!room) return;
 
@@ -77,8 +77,6 @@ export function leaveRoom(clientId) {
     if (playerIndex !== -1) {
         room.players[playerIndex] = null;
         userRooms.delete(clientId);
-        
-        // Wenn der Raum danach leer ist, lösche ihn.
         if (room.players.every(p => p === null)) {
             rooms.delete(roomId);
         } else {
