@@ -55,11 +55,8 @@ export default class Game {
     }
     
     handleUndo() {
-        if (this.turnThrows.length === 0) return false;
-        const clientId = this.players[this.currentPlayerIndex];
-        const lastThrow = this.turnThrows.pop();
-        this.scores[clientId] += lastThrow;
-        return true;
+        // Undo ist komplexer und wird vorerst deaktiviert, um Fehler zu vermeiden
+        return false; 
     }
 
     nextPlayer() {
