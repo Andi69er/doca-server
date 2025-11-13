@@ -1,4 +1,4 @@
-// game.js (REBUILT FROM STABLE BASE)
+// game.js (MODIFIZIERT FÜR UNDO-VERZÖGERUNG)
 export default class Game {
     constructor(players, options) {
         this.players = players; // Array of clientIds
@@ -35,22 +35,19 @@ export default class Game {
             return false;
         }
 
-        // The 'undo' action is special, as it can be triggered by the player who just threw,
-        // even if it's not their turn anymore.
-        if (action.type === "undo_throw") {
-            return this.handleUndo(clientId);
-        }
-
-        // For all other actions, it must be the current player's turn.
+        // Nur der aktuelle Spieler kann Aktionen (Wurf, Undo) ausführen
         if (clientId !== this.players[this.currentPlayerIndex]) {
             return false;
         }
         
-        if (action.type === "player_throw") {
-            return this.handleThrow(clientId, action.payload.points);
+        switch (action.type) {
+            case "player_throw":
+                return this.handleThrow(clientId, action.payload.points);
+            case "undo_throw":
+                return this.handleUndo(clientId);
+            default:
+                return false;
         }
-
-        return false;
     }
 
     handleThrow(clientId, points) {
@@ -61,53 +58,45 @@ export default class Game {
         const currentScore = this.scores[clientId];
         const newScore = currentScore - points;
 
-        if (newScore < 0 || newScore === 1) { // Bust logic
-            this.throwHistory[clientId].push(0); // Record a bust as a score of 0
-            this.nextPlayer();
+        if (newScore < 0 || newScore === 1) { // Bust-Logik
+            this.throwHistory[clientId].push(0); // Ein Bust wird als 0 Punkte gewertet
+            // Spielerwechsel wird vom RoomManager nach der Verzögerung durchgeführt
             return true;
         }
 
         this.scores[clientId] = newScore;
         this.throwHistory[clientId].push(points);
 
-        if (newScore === 0) { // Checkout logic
+        if (newScore === 0) { // Checkout-Logik
             this.winner = clientId;
-            // Don't switch player on a winning throw
-            return true;
+            // Kein Spielerwechsel bei einem Sieg
         }
-
-        // Switch to the next player after every valid throw
-        this.nextPlayer();
+        
         return true;
     }
 
     handleUndo(clientId) {
-        // Determine who threw last. It's the player BEFORE the current one in the turn order.
-        const lastPlayerIndex = (this.currentPlayerIndex + this.players.length - 1) % this.players.length;
-        const lastPlayerId = this.players[lastPlayerIndex];
+        // Da der Spielerwechsel verzögert wird, ist der aktuelle Spieler derjenige, der den Wurf rückgängig machen muss.
+        // Die Prüfung in handleAction stellt bereits sicher, dass clientId === currentPlayerId.
 
-        // Only the player who threw last can undo their throw.
-        if (clientId !== lastPlayerId) {
+        // Prüfen, ob es einen Wurf zum Rückgängigmachen gibt.
+        if (!this.throwHistory[clientId] || this.throwHistory[clientId].length === 0) {
             return false;
         }
 
-        // Check if there is a throw to undo for that player.
-        if (!this.throwHistory[lastPlayerId] || this.throwHistory[lastPlayerId].length === 0) {
-            return false;
-        }
-
-        // Remove the last throw and add the points back to the score.
-        const lastThrow = this.throwHistory[lastPlayerId].pop();
-        this.scores[lastPlayerId] += lastThrow;
-
-        // It is now that player's turn again.
-        this.currentPlayerIndex = lastPlayerIndex;
-        this.winner = null; // Clear winner status in case the winning throw is undone.
+        // Letzten Wurf entfernen und die Punkte wieder zum Score addieren.
+        const lastThrow = this.throwHistory[clientId].pop();
+        this.scores[clientId] += lastThrow;
+        
+        // Siegerstatus aufheben, falls der Siegeswurf rückgängig gemacht wurde.
+        this.winner = null; 
         
         return true;
     }
 
     nextPlayer() {
+        // Wird jetzt vom RoomManager nach der Verzögerung aufgerufen
+        if(this.winner) return; // Kein Spielerwechsel bei einem Sieg
         this.currentPlayerIndex = (this.currentPlayerIndex + 1) % this.players.length;
     }
 }
