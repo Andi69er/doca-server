@@ -1,46 +1,38 @@
 export default class Game {
-    /**
-     * @param {Array<string>} players - array of clientIds (filtered to truthy before passing)
-     * @param {object} options - may contain startingScore, startingPlayerId, startingMode, ...
-     */
     constructor(players, options = {}) {
-        this.players = Array.isArray(players) ? players.slice() : [];
+
+        // Prepare player array
+        this.players = Array.isArray(players) ? players.filter(p => p) : [];
+
+        // Options
         this.options = Object.assign({ startingScore: 501 }, options || {});
+
         this.isStarted = true;
         this.winner = null;
 
-        // Set currentPlayerIndex based on provided startingPlayerId if present and valid
+        // Determine starting player
         this.currentPlayerIndex = 0;
+
         if (this.options.startingPlayerId) {
             const idx = this.players.indexOf(this.options.startingPlayerId);
-            if (idx !== -1) {
-                this.currentPlayerIndex = idx;
-            } else {
-                // If provided ID not found, keep default 0
-                this.currentPlayerIndex = 0;
-            }
-        } else if (this.options.startingMode === "bull" && typeof this.options.bullStarterIndex === "number") {
-            // optional: allow explicit index for bull-mode if passed
-            if (this.options.bullStarterIndex >= 0 && this.options.bullStarterIndex < this.players.length) {
-                this.currentPlayerIndex = this.options.bullStarterIndex;
-            }
-        } else {
-            // default: index 0
-            this.currentPlayerIndex = 0;
+            if (idx !== -1) this.currentPlayerIndex = idx;
         }
 
+        // Score + history
         this.scores = {};
-        this.throwHistory = {}; // Persistent history for the game
+        this.throwHistory = {};      // Array of points PER THROW
+        this.turnHistory = {};       // Array of TURNS (groups of 3)
 
-        // initialize scores and throwHistory only for present players
-        this.players.forEach(pId => {
-            if (pId) {
-                this.scores[pId] = parseInt(this.options.startingScore) || 501;
-                this.throwHistory[pId] = [];
-            }
+        this.throwCountThisTurn = 0; // 0..2
+
+        this.players.forEach(id => {
+            this.scores[id] = parseInt(this.options.startingScore) || 501;
+            this.throwHistory[id] = [];
+            this.turnHistory[id] = [];
         });
     }
 
+    // Game state for client
     getState() {
         return {
             isStarted: this.isStarted,
@@ -50,91 +42,147 @@ export default class Game {
             players: this.players,
             options: this.options,
             throwHistory: this.throwHistory,
+            turnHistory: this.turnHistory,
+            throwCountThisTurn: this.throwCountThisTurn
         };
     }
 
+    // Main action handler
     handleAction(clientId, action) {
-        if (this.winner) {
-            return false;
-        }
 
-        // The 'undo' action is special, as it can be triggered by the player who just threw,
-        // even if it's not their turn anymore.
-        if (action.type === "undo_throw" || action.type === "undo") {
+        if (this.winner) return false;
+
+        if (!action || !action.type) return false;
+
+        // Undo request
+        if (action.type === "undo" || action.type === "undo_throw") {
             return this.handleUndo(clientId);
         }
 
-        // For all other actions, it must be the current player's turn.
+        // Must be this player's turn
         if (clientId !== this.players[this.currentPlayerIndex]) {
             return false;
         }
-        
-        if (action.type === "player_throw" || action.type === "throw") {
-            // Expect payload.points (total for the throw)
-            const points = (action.payload && action.payload.points) || typeof action.payload === 'number' && action.payload || null;
-            if (points === null) return false;
-            return this.handleThrow(clientId, points);
+
+        let points = null;
+
+        // Allow: .points
+        if (action.payload && typeof action.payload.points === "number") {
+            points = action.payload.points;
         }
 
-        return false;
+        // Allow: .value + .mult
+        if (
+            action.payload &&
+            typeof action.payload.value === "number" &&
+            typeof action.payload.mult === "number"
+        ) {
+            points = action.payload.value * action.payload.mult;
+        }
+
+        // Allow: payload = number
+        if (typeof action.payload === "number") {
+            points = action.payload;
+        }
+
+        if (points === null || isNaN(points)) return false;
+
+        return this.handleThrow(clientId, points);
     }
 
+    // Handle single dart thrown
     handleThrow(clientId, points) {
-        if (typeof points !== 'number' || points < 0 || points > 180) {
-            return false;
-        }
+
+        if (typeof points !== "number" || points < 0 || points > 180) return false;
 
         const currentScore = this.scores[clientId];
         const newScore = currentScore - points;
 
-        if (newScore < 0 || newScore === 1) { // Bust logic
-            this.throwHistory[clientId].push(0); // Record a bust as a score of 0
+        // Log the throw
+        this.throwHistory[clientId].push(points);
+
+        // ----- BUST -----
+        if (newScore < 0 || newScore === 1) {
+
+            // Bust: record bust in last turn group
+            this.turnHistory[clientId].push({
+                dart: this.throwCountThisTurn,
+                result: "BUST",
+                points: points
+            });
+
+            // BUST ends the turn completely
+            this.throwCountThisTurn = 0;
             this.nextPlayer();
             return true;
         }
 
+        // ----- VALID -----
         this.scores[clientId] = newScore;
-        this.throwHistory[clientId].push(points);
 
-        if (newScore === 0) { // Checkout logic
+        this.turnHistory[clientId].push({
+            dart: this.throwCountThisTurn,
+            result: "OK",
+            points: points
+        });
+
+        // WIN?
+        if (newScore === 0) {
             this.winner = clientId;
-            // Don't switch player on a winning throw
             return true;
         }
 
-        // Switch to the next player after every valid throw
-        this.nextPlayer();
+        // 3 darts thrown => change player
+        this.throwCountThisTurn++;
+
+        if (this.throwCountThisTurn >= 3) {
+            this.throwCountThisTurn = 0;
+            this.nextPlayer();
+        }
+
         return true;
     }
 
+    // Undo last dart
     handleUndo(clientId) {
-        // Determine who threw last. It's the player BEFORE the current one in the turn order.
+
+        // Undo always applies to the last player who threw
         const lastPlayerIndex = (this.currentPlayerIndex + this.players.length - 1) % this.players.length;
         const lastPlayerId = this.players[lastPlayerIndex];
 
-        // Only the player who threw last can undo their throw.
-        if (clientId !== lastPlayerId) {
-            return false;
-        }
+        if (clientId !== lastPlayerId) return false;
 
-        // Check if there is a throw to undo for that player.
-        if (!this.throwHistory[lastPlayerId] || this.throwHistory[lastPlayerId].length === 0) {
-            return false;
-        }
+        if (this.throwHistory[lastPlayerId].length === 0) return false;
 
-        // Remove the last throw and add the points back to the score.
         const lastThrow = this.throwHistory[lastPlayerId].pop();
-        // lastThrow could be 0 (bust) — adding 0 is fine
-        this.scores[lastPlayerId] += lastThrow || 0;
 
-        // It is now that player's turn again.
+        // Adjust score
+        this.scores[lastPlayerId] += lastThrow;
+
+        // Remove last turn info
+        if (this.turnHistory[lastPlayerId].length > 0) {
+            this.turnHistory[lastPlayerId].pop();
+        }
+
+        // Restore turn to that player
         this.currentPlayerIndex = lastPlayerIndex;
-        this.winner = null; // Clear winner status in case the winning throw is undone.
-        
+
+        // Reset turn counter (safe fallback)
+        this.throwCountThisTurn =
+            Math.min( Math.max( this.throwHistory[lastPlayerId].length % 3, 0 ), 2 );
+
+        this.winner = null;
+
         return true;
     }
 
+    // Switch to next player
     nextPlayer() {
-        this.currentPlayerIndex = (this.currentPlayerIndex + 1) % this.players.length;
+        if (this.players.length === 0) return;
+
+        this.currentPlayerIndex =
+            (this.currentPlayerIndex + 1) % this.players.length;
+
+        this.throwCountThisTurn = 0;
     }
 }
