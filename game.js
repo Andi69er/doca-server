@@ -1,19 +1,42 @@
-// game.js (REBUILT FROM STABLE BASE)
 export default class Game {
-    constructor(players, options) {
-        this.players = players; // Array of clientIds
-        this.options = { startingScore: 501, ...options };
+    /**
+     * @param {Array<string>} players - array of clientIds (filtered to truthy before passing)
+     * @param {object} options - may contain startingScore, startingPlayerId, startingMode, ...
+     */
+    constructor(players, options = {}) {
+        this.players = Array.isArray(players) ? players.slice() : [];
+        this.options = Object.assign({ startingScore: 501 }, options || {});
         this.isStarted = true;
         this.winner = null;
+
+        // Set currentPlayerIndex based on provided startingPlayerId if present and valid
         this.currentPlayerIndex = 0;
-        
+        if (this.options.startingPlayerId) {
+            const idx = this.players.indexOf(this.options.startingPlayerId);
+            if (idx !== -1) {
+                this.currentPlayerIndex = idx;
+            } else {
+                // If provided ID not found, keep default 0
+                this.currentPlayerIndex = 0;
+            }
+        } else if (this.options.startingMode === "bull" && typeof this.options.bullStarterIndex === "number") {
+            // optional: allow explicit index for bull-mode if passed
+            if (this.options.bullStarterIndex >= 0 && this.options.bullStarterIndex < this.players.length) {
+                this.currentPlayerIndex = this.options.bullStarterIndex;
+            }
+        } else {
+            // default: index 0
+            this.currentPlayerIndex = 0;
+        }
+
         this.scores = {};
         this.throwHistory = {}; // Persistent history for the game
 
-        players.forEach(pId => {
+        // initialize scores and throwHistory only for present players
+        this.players.forEach(pId => {
             if (pId) {
-                this.scores[pId] = parseInt(this.options.startingScore);
-                this.throwHistory[pId] = []; // Initialize history for each player
+                this.scores[pId] = parseInt(this.options.startingScore) || 501;
+                this.throwHistory[pId] = [];
             }
         });
     }
@@ -37,7 +60,7 @@ export default class Game {
 
         // The 'undo' action is special, as it can be triggered by the player who just threw,
         // even if it's not their turn anymore.
-        if (action.type === "undo_throw") {
+        if (action.type === "undo_throw" || action.type === "undo") {
             return this.handleUndo(clientId);
         }
 
@@ -46,8 +69,11 @@ export default class Game {
             return false;
         }
         
-        if (action.type === "player_throw") {
-            return this.handleThrow(clientId, action.payload.points);
+        if (action.type === "player_throw" || action.type === "throw") {
+            // Expect payload.points (total for the throw)
+            const points = (action.payload && action.payload.points) || typeof action.payload === 'number' && action.payload || null;
+            if (points === null) return false;
+            return this.handleThrow(clientId, points);
         }
 
         return false;
@@ -98,7 +124,8 @@ export default class Game {
 
         // Remove the last throw and add the points back to the score.
         const lastThrow = this.throwHistory[lastPlayerId].pop();
-        this.scores[lastPlayerId] += lastThrow;
+        // lastThrow could be 0 (bust) — adding 0 is fine
+        this.scores[lastPlayerId] += lastThrow || 0;
 
         // It is now that player's turn again.
         this.currentPlayerIndex = lastPlayerIndex;
