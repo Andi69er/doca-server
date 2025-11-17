@@ -1,29 +1,29 @@
+// Dateiname: Game.js (oder wie auch immer du sie nennst)
+// Diese Datei enthält die reine Spiellogik. Sie ist der "Motor".
+
 export default class Game {
     constructor(players, options = {}) {
-
-        // Prepare player array
+        // Bereitet das Spieler-Array vor.
         this.players = Array.isArray(players) ? players.filter(p => p) : [];
 
-        // Options
+        // Setzt die Spieloptionen.
         this.options = Object.assign({ startingScore: 501 }, options || {});
 
         this.isStarted = true;
         this.winner = null;
 
-        // Determine starting player
+        // Bestimmt den Startspieler.
         this.currentPlayerIndex = 0;
-
         if (this.options.startingPlayerId) {
             const idx = this.players.indexOf(this.options.startingPlayerId);
             if (idx !== -1) this.currentPlayerIndex = idx;
         }
 
-        // Score + history
+        // Initialisiert die Punktestände und die Wurf-Historie.
         this.scores = {};
-        this.throwHistory = {};      // Array of points PER THROW
-        this.turnHistory = {};       // Array of TURNS (groups of 3)
-
-        this.throwCountThisTurn = 0; // 0..2
+        this.throwHistory = {};
+        this.turnHistory = {};
+        this.throwCountThisTurn = 0; // 0, 1 oder 2
 
         this.players.forEach(id => {
             this.scores[id] = parseInt(this.options.startingScore) || 501;
@@ -32,7 +32,10 @@ export default class Game {
         });
     }
 
-    // Game state for client
+    /**
+     * Gibt den vollständigen Zustand des Spiels zurück.
+     * Dieses Objekt wird an die Clients gesendet.
+     */
     getState() {
         return {
             isStarted: this.isStarted,
@@ -46,42 +49,42 @@ export default class Game {
             throwCountThisTurn: this.throwCountThisTurn
         };
     }
+    
+    /**
+     * NEUE HILFSFUNKTION:
+     * Gibt eine Liste der Spieler-IDs zurück. Dies erleichtert dem Server
+     * das Senden von Nachrichten an alle Spieler im Spiel.
+     */
+    getPlayerIds() {
+        return this.players;
+    }
 
-    // Main action handler
+
+    /**
+     * Verarbeitet eine Aktion von einem Spieler.
+     * Dies ist die Hauptfunktion, die vom Server aufgerufen wird.
+     */
     handleAction(clientId, action) {
-
         if (this.winner) return false;
-
         if (!action || !action.type) return false;
 
-        // Undo request
+        // Verarbeitet einen "Undo"-Befehl.
         if (action.type === "undo" || action.type === "undo_throw") {
             return this.handleUndo(clientId);
         }
 
-        // Must be this player's turn
+        // Prüft, ob der richtige Spieler am Zug ist.
         if (clientId !== this.players[this.currentPlayerIndex]) {
             return false;
         }
 
+        // Extrahiert die geworfene Punktzahl aus der Aktion.
         let points = null;
-
-        // Allow: .points
         if (action.payload && typeof action.payload.points === "number") {
             points = action.payload.points;
-        }
-
-        // Allow: .value + .mult
-        if (
-            action.payload &&
-            typeof action.payload.value === "number" &&
-            typeof action.payload.mult === "number"
-        ) {
+        } else if (action.payload && typeof action.payload.value === "number" && typeof action.payload.mult === "number") {
             points = action.payload.value * action.payload.mult;
-        }
-
-        // Allow: payload = number
-        if (typeof action.payload === "number") {
+        } else if (typeof action.payload === "number") {
             points = action.payload;
         }
 
@@ -90,99 +93,78 @@ export default class Game {
         return this.handleThrow(clientId, points);
     }
 
-    // Handle single dart thrown
+    /**
+     * Verarbeitet einen einzelnen Wurf.
+     */
     handleThrow(clientId, points) {
-
         if (typeof points !== "number" || points < 0 || points > 180) return false;
 
         const currentScore = this.scores[clientId];
         const newScore = currentScore - points;
 
-        // Log the throw
         this.throwHistory[clientId].push(points);
 
-        // ----- BUST -----
+        // Szenario 1: BUST (überworfen)
         if (newScore < 0 || newScore === 1) {
-
-            // Bust: record bust in last turn group
-            this.turnHistory[clientId].push({
-                dart: this.throwCountThisTurn,
-                result: "BUST",
-                points: points
-            });
-
-            // BUST ends the turn completely
-            this.throwCountThisTurn = 0;
+            this.turnHistory[clientId].push({ dart: this.throwCountThisTurn, result: "BUST", points: points });
+            // Nach einem Bust ist der Zug sofort vorbei.
             this.nextPlayer();
             return true;
         }
 
-        // ----- VALID -----
+        // Szenario 2: Gültiger Wurf
         this.scores[clientId] = newScore;
+        this.turnHistory[clientId].push({ dart: this.throwCountThisTurn, result: "OK", points: points });
 
-        this.turnHistory[clientId].push({
-            dart: this.throwCountThisTurn,
-            result: "OK",
-            points: points
-        });
-
-        // WIN?
+        // Szenario 2a: GEWINN
         if (newScore === 0) {
             this.winner = clientId;
             return true;
         }
 
-        // 3 darts thrown => change player
+        // Szenario 2b: Zug geht weiter oder ist vorbei
         this.throwCountThisTurn++;
-
         if (this.throwCountThisTurn >= 3) {
-            this.throwCountThisTurn = 0;
-            this.nextPlayer();
+            this.nextPlayer(); // Nach 3 Darts ist der nächste Spieler dran.
         }
 
         return true;
     }
 
-    // Undo last dart
+    /**
+     * Macht den letzten Wurf rückgängig.
+     */
     handleUndo(clientId) {
-
-        // Undo always applies to the last player who threw
+        // WICHTIG: Undo gilt für den Spieler, der ZULETZT geworfen hat,
+        // auch wenn der currentPlayer schon gewechselt hat.
         const lastPlayerIndex = (this.currentPlayerIndex + this.players.length - 1) % this.players.length;
         const lastPlayerId = this.players[lastPlayerIndex];
 
+        // Nur der Spieler, der geworfen hat, kann Undo auslösen.
         if (clientId !== lastPlayerId) return false;
-
         if (this.throwHistory[lastPlayerId].length === 0) return false;
 
         const lastThrow = this.throwHistory[lastPlayerId].pop();
-
-        // Adjust score
         this.scores[lastPlayerId] += lastThrow;
 
-        // Remove last turn info
         if (this.turnHistory[lastPlayerId].length > 0) {
             this.turnHistory[lastPlayerId].pop();
         }
 
-        // Restore turn to that player
+        // Setzt den Zug auf den rückgängig gemachten Spieler zurück.
         this.currentPlayerIndex = lastPlayerIndex;
-
-        // Reset turn counter (safe fallback)
-        this.throwCountThisTurn =
-            Math.min( Math.max( this.throwHistory[lastPlayerId].length % 3, 0 ), 2 );
-
+        this.throwCountThisTurn = this.throwHistory[lastPlayerId].length % 3;
         this.winner = null;
 
         return true;
     }
 
-    // Switch to next player
+    /**
+     * Wechselt zum nächsten Spieler.
+     */
     nextPlayer() {
         if (this.players.length === 0) return;
-
-        this.currentPlayerIndex =
-            (this.currentPlayerIndex + 1) % this.players.length;
-
-        this.throwCountThisTurn = 0;
+        this.currentPlayerIndex = (this.currentPlayerIndex + 1) % this.players.length;
+        this.throwCountThisTurn = 0; // Setzt den Dart-Zähler für den neuen Spieler zurück.
     }
 }

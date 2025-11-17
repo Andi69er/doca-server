@@ -1,6 +1,5 @@
-// roomManager.js (DIAGNOSTIC VERSION - force-start & verbose logging)
-// Replace your current roomManager.js with this file for debugging.
-// This file is safe to run: it only adds logging and deterministic start behavior.
+// Dateiname: roomManager.js
+// FINALE KORRIGIERTE VERSION
 
 import { broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
@@ -61,7 +60,6 @@ export function joinRoom(clientId, username, roomId) {
         return;
     }
 
-    // Cancel pending deletion
     if (roomDeletionTimers.has(roomId)) {
         clearTimeout(roomDeletionTimers.get(roomId));
         roomDeletionTimers.delete(roomId);
@@ -70,7 +68,6 @@ export function joinRoom(clientId, username, roomId) {
 
     const playerIndex = room.playerNames.indexOf(username);
     if (playerIndex !== -1) {
-        // reconnect same slot
         room.players[playerIndex] = clientId;
         if(room.ownerUsername === username) room.ownerId = clientId;
         userRooms.set(clientId, roomId);
@@ -88,7 +85,6 @@ export function joinRoom(clientId, username, roomId) {
             return;
         }
     }
-    // send full state to players
     broadcastToPlayers(room.players, getFullRoomState(room));
     broadcastRoomList();
 }
@@ -122,11 +118,6 @@ export function leaveRoom(clientId) {
     }
 }
 
-/**
- * startGame(ownerId, opts)
- * opts may contain: { startingPlayerId, startingMode, options }
- * This function MUST be invoked by owner in normal flow.
- */
 export function startGame(ownerId, opts = {}) {
     const roomId = userRooms.get(ownerId);
     if (!roomId) {
@@ -158,24 +149,13 @@ export function startGame(ownerId, opts = {}) {
 
     room.game = new Game(actualPlayers, gameOptions);
 
-    // Broadcast result and also debug events to clients
     broadcastToPlayers(room.players, getFullRoomState(room));
     sendToClient(ownerId, { type: "debug_game_started", startingPlayerId: room.game.players[room.game.currentPlayerIndex], timestamp: now() });
-    // inform all players who is the first
     broadcastToPlayers(room.players, { type: "debug_first_player", startingPlayerId: room.game.players[room.game.currentPlayerIndex], timestamp: now() });
-
     console.log(`[${now()}] Game started in room ${roomId}. first=${room.game.players[room.game.currentPlayerIndex]}`);
     broadcastRoomList();
 }
 
-/**
- * requestStartGame(requesterId, payload)
- * payload: { roomId?, desiredStarter?, requestType?, options? }
- * Behavior:
- *  - Validate requester present
- *  - If owner present -> call startGame(ownerId, { startingPlayerId: requesterId, options })
- *  - If owner absent -> start directly with requester as starter
- */
 export function requestStartGame(requesterId, payload = {}) {
     const roomId = payload.roomId || userRooms.get(requesterId);
     console.log(`[${now()}] requestStartGame called by ${requesterId} payload=${JSON.stringify(payload)} inferredRoom=${roomId}`);
@@ -186,7 +166,6 @@ export function requestStartGame(requesterId, payload = {}) {
     }
     const room = rooms.get(roomId);
 
-    // sanity: requester must be in room players list
     if (!room.players.includes(requesterId)) {
         console.log(`[${now()}] requestStartGame: requester ${requesterId} not in room ${roomId}`);
         sendToClient(requesterId, { type: "error", message: "Du bist nicht in diesem Raum." });
@@ -200,31 +179,25 @@ export function requestStartGame(requesterId, payload = {}) {
         startOpts.startingMode = "bull";
     }
 
-    // If payload explicitly provides startingPlayerId prefer it; otherwise set to requester
     if (payload.startingPlayerId) {
         startOpts.startingPlayerId = payload.startingPlayerId;
     } else if (payload.desiredStarter === "me" || payload.desiredStarter === "request_opponent" || payload.desiredStarter === "request_self") {
         startOpts.startingPlayerId = requesterId;
     } else {
-        // default: use requester (safe)
         startOpts.startingPlayerId = requesterId;
     }
 
     console.log(`[${now()}] requestStartGame -> owner=${ownerId} will be asked to start with starter=${startOpts.startingPlayerId}`);
 
-    // Defensive: send debug message to owner and requester to show raw payload
     if (ownerId) {
         sendToClient(ownerId, { type: "debug_start_request_received", requesterId, payload: startOpts, timestamp: now() });
     }
     sendToClient(requesterId, { type: "debug_start_request_sent", toOwner: ownerId, payload: startOpts, timestamp: now() });
 
     if (ownerId && room.players.includes(ownerId)) {
-        // To keep behavior deterministic we start on behalf of the owner server-side
-        // (this avoids race conditions where owner client ignores the request).
         console.log(`[${now()}] requestStartGame: starting game ON BEHALF OF owner ${ownerId} with starter ${startOpts.startingPlayerId}`);
         startGame(ownerId, startOpts);
     } else {
-        // owner missing -> start directly using requester as starter
         startOpts.startingPlayerId = startOpts.startingPlayerId || requesterId;
         console.log(`[${now()}] requestStartGame: owner missing, starting directly with ${startOpts.startingPlayerId}`);
         const actualPlayers = room.players.filter(p => p);
@@ -234,12 +207,32 @@ export function requestStartGame(requesterId, payload = {}) {
     }
 }
 
+// ========================================================================
+// HIER IST DIE KORRIGIERTE FUNKTION
+// ========================================================================
 export function handleGameAction(clientId, action) {
-    const room = userRooms.has(clientId) ? rooms.get(userRooms.get(clientId)) : null;
-    if (room?.game?.handleAction(clientId, action)) {
-        broadcastToPlayers(room.players, getFullRoomState(room));
+    const roomId = userRooms.get(clientId);
+    if (!roomId) return;
+    
+    const room = rooms.get(roomId);
+    if (!room || !room.game) return;
+
+    // Führe die Spielaktion aus. Die Game-Klasse aktualisiert den internen Zustand.
+    const actionWasSuccessful = room.game.handleAction(clientId, action);
+
+    // Wenn die Aktion gültig war (z.B. ein Wurf vom richtigen Spieler),
+    // dann sende den neuen, kompletten Spielzustand an ALLE Spieler im Raum.
+    if (actionWasSuccessful) {
+        // Hole eine saubere Liste der aktiven Spieler-IDs aus dem Raum.
+        // Das .filter(p => p) entfernt alle 'null'-Werte.
+        const activePlayers = room.players.filter(p => p);
+        
+        // Sende den neuen Zustand an alle aktiven Spieler.
+        broadcastToPlayers(activePlayers, getFullRoomState(room));
     }
 }
+// ========================================================================
+
 
 // For debugging: export internal maps (only in debug mode, remove in prod)
 export function __debugDump() {
