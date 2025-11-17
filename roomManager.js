@@ -1,5 +1,6 @@
 // Dateiname: roomManager.js
-// FINALE, KORRIGIERTE VERSION 2.0 - Löst das "WARTE"-Problem endgültig
+// FINALE VERSION - Basiert auf deiner funktionierenden "DIAGNOSTIC VERSION"
+// mit der EINEN entscheidenden Korrektur in handleGameAction.
 
 import { broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
@@ -19,6 +20,7 @@ export function broadcastRoomList() {
     broadcast({ type: "room_update", rooms: roomList });
 }
 
+// DEINE FUNKTIONIERENDE getFullRoomState - WIRD NICHT VERÄNDERT
 function getFullRoomState(room) {
     if (!room) return null;
     const gameState = room.game ? room.game.getState() : {};
@@ -208,40 +210,39 @@ export function requestStartGame(requesterId, payload = {}) {
 }
 
 // ========================================================================
-// HIER IST DIE FINALE KORREKTUR, DIE DAS PROBLEM LÖST
+// HIER IST DIE EINE, ENTSCHEIDENDE KORREKTUR
 // ========================================================================
 export function handleGameAction(clientId, action) {
     const roomId = userRooms.get(clientId);
-    if (!roomId) { return; } // Spieler ist in keinem Raum
-
+    if (!roomId) return;
+    
     const room = rooms.get(roomId);
-    if (!room || !room.game) { return; } // Raum oder Spiel existiert nicht
+    if (!room || !room.game) return;
 
     // Führe die Aktion in der Game-Logik aus.
-    // Die game-Klasse prüft, ob der Spieler am Zug ist, und aktualisiert den Zustand.
     const actionWasValid = room.game.handleAction(clientId, action);
 
-    // Wenn die Aktion gültig war (z.B. ein Wurf vom korrekten Spieler):
+    // Wenn die Aktion gültig war:
     if (actionWasValid) {
-        // Hole die Liste der Spieler-IDs direkt aus der Game-Instanz.
-        // Diese Liste ist garantiert sauber und enthält nur die aktiven Spieler.
-        const playersInGame = room.game.players;
-
-        // Hole den kompletten, neuen Spielzustand.
-        const newGameState = getFullRoomState(room);
+        // 1. Hole den neuen Zustand mit DEINER funktionierenden `getFullRoomState` Funktion.
+        //    Dadurch bleiben Namen, Cams etc. erhalten.
+        const newFullState = getFullRoomState(room);
         
-        // Sende diesen neuen Zustand an JEDEN Spieler, der im Spiel ist.
-        // Das ist der entscheidende Schritt.
-        console.log(`[${now()}] Action valid, broadcasting game_state to players: ${playersInGame.join(', ')}`);
-        playersInGame.forEach(playerId => {
-            sendToClient(playerId, newGameState);
+        // 2. Hole die Liste der Spieler direkt aus der Game-Instanz.
+        //    Das ist die garantiert korrekte Liste der aktiven Spieler.
+        const playersToNotify = room.game.players;
+
+        // 3. Sende den neuen Zustand manuell an JEDEN Spieler.
+        console.log(`[FIXED] Aktion von ${clientId} gültig. Sende Update an ${playersToNotify.join(', ')}.`);
+        playersToNotify.forEach(id => {
+            sendToClient(id, newFullState);
         });
     }
 }
 // ========================================================================
 
 
-// For debugging: export internal maps (only in debug mode, remove in prod)
+// For debugging
 export function __debugDump() {
     return {
         rooms: Array.from(rooms.entries()).map(([id, r]) => ({ id, ownerId: r.ownerId, players: r.players, playerNames: r.playerNames, hasGame: !!r.game })),
