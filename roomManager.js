@@ -20,6 +20,7 @@ export function broadcastRoomList() {
     broadcast({ type: "room_update", rooms: roomList });
 }
 
+// DEINE FUNKTIONIERENDE getFullRoomState - WIRD NICHT VERÄNDERT
 function getFullRoomState(room) {
     if (!room) return null;
     const gameState = room.game ? room.game.getState() : {};
