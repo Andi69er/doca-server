@@ -1,5 +1,5 @@
 // Dateiname: roomManager.js
-// FINALE, KORRIGIERTE VERSION 2.0 - Löst das "WARTE"-Problem endgültig
+// FINALE VERSION 3.0 - Radikal vereinfachte und direkte Broadcast-Logik
 
 import { broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
@@ -22,15 +22,24 @@ export function broadcastRoomList() {
 function getFullRoomState(room) {
     if (!room) return null;
     const gameState = room.game ? room.game.getState() : {};
+    // WICHTIG: Füge die Spielernamen hinzu, da die Game-Klasse sie nicht kennt
+    const playerNames = {};
+    room.players.forEach((id, index) => {
+        if (id) {
+            playerNames[id] = room.playerNames[index];
+        }
+    });
+
     return {
         type: "game_state",
         id: room.id, name: room.name, ownerId: room.ownerId,
         players: room.players,
-        playerNames: room.playerNames,
-        maxPlayers: room.maxPlayers,
+        playerNames: room.playerNames, // Client erwartet dieses Array
+        maxPlayers: r.maxPlayers,
         options: room.options, ...gameState,
     };
 }
+
 
 export function createRoom(clientId, ownerUsername, name, options) {
     if (!ownerUsername) return;
@@ -85,7 +94,7 @@ export function joinRoom(clientId, username, roomId) {
             return;
         }
     }
-    broadcastToPlayers(room.players, getFullRoomState(room));
+    broadcastToPlayers(room.players.filter(p => p), getFullRoomState(room));
     broadcastRoomList();
 }
 
@@ -112,7 +121,7 @@ export function leaveRoom(clientId) {
             }, 15000);
             roomDeletionTimers.set(roomId, timer);
         } else {
-            broadcastToPlayers(room.players, getFullRoomState(room));
+            broadcastToPlayers(room.players.filter(p => p), getFullRoomState(room));
         }
         broadcastRoomList();
     }
@@ -120,57 +129,30 @@ export function leaveRoom(clientId) {
 
 export function startGame(ownerId, opts = {}) {
     const roomId = userRooms.get(ownerId);
-    if (!roomId) {
-        console.log(`[${now()}] startGame denied: owner ${ownerId} not in any room`);
-        return;
-    }
+    if (!roomId) return;
     const room = rooms.get(roomId);
-    if (!room) {
-        console.log(`[${now()}] startGame denied: room ${roomId} missing`);
-        return;
-    }
-    if (room.ownerId !== ownerId) {
-        console.log(`[${now()}] startGame denied: ${ownerId} is not owner of ${roomId}`);
-        return;
-    }
+    if (!room || room.ownerId !== ownerId) return;
 
     const actualPlayers = room.players.filter(p => p);
-    if (actualPlayers.length < 2) {
-        console.log(`[${now()}] startGame aborted: not enough players in ${roomId}`);
-        sendToClient(ownerId, { type: "error", message: "Nicht genug Spieler zum Starten." });
-        return;
-    }
+    if (actualPlayers.length < 2) return;
 
     const gameOptions = Object.assign({}, room.options || {}, opts.options || {});
     if (opts.startingMode) gameOptions.startingMode = opts.startingMode;
     if (opts.startingPlayerId) gameOptions.startingPlayerId = opts.startingPlayerId;
 
-    console.log(`[${now()}] startGame invoked by owner=${ownerId} room=${roomId} opts.startingPlayerId=${gameOptions.startingPlayerId || '(none)'} opts.startingMode=${gameOptions.startingMode || '(none)'}`);
-
     room.game = new Game(actualPlayers, gameOptions);
-
-    broadcastToPlayers(room.players, getFullRoomState(room));
-    sendToClient(ownerId, { type: "debug_game_started", startingPlayerId: room.game.players[room.game.currentPlayerIndex], timestamp: now() });
-    broadcastToPlayers(room.players, { type: "debug_first_player", startingPlayerId: room.game.players[room.game.currentPlayerIndex], timestamp: now() });
+    
+    broadcastToPlayers(room.players.filter(p => p), getFullRoomState(room));
     console.log(`[${now()}] Game started in room ${roomId}. first=${room.game.players[room.game.currentPlayerIndex]}`);
     broadcastRoomList();
 }
 
 export function requestStartGame(requesterId, payload = {}) {
     const roomId = payload.roomId || userRooms.get(requesterId);
-    console.log(`[${now()}] requestStartGame called by ${requesterId} payload=${JSON.stringify(payload)} inferredRoom=${roomId}`);
-    if (!roomId || !rooms.has(roomId)) {
-        console.log(`[${now()}] requestStartGame: room not found for ${requesterId}`);
-        sendToClient(requesterId, { type: "error", message: "Raum nicht gefunden." });
-        return;
-    }
+    if (!roomId || !rooms.has(roomId)) return;
     const room = rooms.get(roomId);
 
-    if (!room.players.includes(requesterId)) {
-        console.log(`[${now()}] requestStartGame: requester ${requesterId} not in room ${roomId}`);
-        sendToClient(requesterId, { type: "error", message: "Du bist nicht in diesem Raum." });
-        return;
-    }
+    if (!room.players.includes(requesterId)) return;
 
     const ownerId = room.ownerId;
     const startOpts = { options: payload.options || {} };
@@ -187,61 +169,64 @@ export function requestStartGame(requesterId, payload = {}) {
         startOpts.startingPlayerId = requesterId;
     }
 
-    console.log(`[${now()}] requestStartGame -> owner=${ownerId} will be asked to start with starter=${startOpts.startingPlayerId}`);
-
-    if (ownerId) {
-        sendToClient(ownerId, { type: "debug_start_request_received", requesterId, payload: startOpts, timestamp: now() });
-    }
-    sendToClient(requesterId, { type: "debug_start_request_sent", toOwner: ownerId, payload: startOpts, timestamp: now() });
-
     if (ownerId && room.players.includes(ownerId)) {
-        console.log(`[${now()}] requestStartGame: starting game ON BEHALF OF owner ${ownerId} with starter ${startOpts.startingPlayerId}`);
         startGame(ownerId, startOpts);
     } else {
-        startOpts.startingPlayerId = startOpts.startingPlayerId || requesterId;
-        console.log(`[${now()}] requestStartGame: owner missing, starting directly with ${startOpts.startingPlayerId}`);
         const actualPlayers = room.players.filter(p => p);
         room.game = new Game(actualPlayers, Object.assign({}, room.options || {}, startOpts.options, { startingPlayerId: startOpts.startingPlayerId }));
-        broadcastToPlayers(room.players, getFullRoomState(room));
+        broadcastToPlayers(room.players.filter(p => p), getFullRoomState(room));
         broadcastRoomList();
     }
 }
 
 // ========================================================================
-// HIER IST DIE FINALE KORREKTUR, DIE DAS PROBLEM LÖST
+// HIER IST DIE FINALE, KUGELSICHERE VERSION DER FUNKTION
 // ========================================================================
 export function handleGameAction(clientId, action) {
     const roomId = userRooms.get(clientId);
-    if (!roomId) { return; } // Spieler ist in keinem Raum
-
+    if (!roomId) {
+        console.error(`[${now()}] FEHLER: Client ${clientId} hat eine Aktion gesendet, ist aber in keinem Raum.`);
+        return;
+    }
+    
     const room = rooms.get(roomId);
-    if (!room || !room.game) { return; } // Raum oder Spiel existiert nicht
+    if (!room || !room.game) {
+        console.error(`[${now()}] FEHLER: Aktion von ${clientId} in Raum ${roomId} empfangen, aber es läuft kein Spiel.`);
+        return;
+    }
 
-    // Führe die Aktion in der Game-Logik aus.
-    // Die game-Klasse prüft, ob der Spieler am Zug ist, und aktualisiert den Zustand.
+    // Schritt 1: Führe die Aktion in der Game-Logik aus.
     const actionWasValid = room.game.handleAction(clientId, action);
 
-    // Wenn die Aktion gültig war (z.B. ein Wurf vom korrekten Spieler):
+    // Schritt 2: Wenn die Aktion gültig war (Wurf vom richtigen Spieler etc.)...
     if (actionWasValid) {
-        // Hole die Liste der Spieler-IDs direkt aus der Game-Instanz.
-        // Diese Liste ist garantiert sauber und enthält nur die aktiven Spieler.
+        // ... DANN sende den neuen Zustand an ALLE Spieler im Spiel.
+
+        // Hole den neuen, kompletten Spiel-Zustand.
+        const newGameStatePayload = getFullRoomState(room);
+        
+        // Hole die Liste der Spieler, die im Spiel sind, direkt aus der Game-Instanz.
+        // Das ist die GARANTIERT korrekte Liste.
         const playersInGame = room.game.players;
 
-        // Hole den kompletten, neuen Spielzustand.
-        const newGameState = getFullRoomState(room);
-        
-        // Sende diesen neuen Zustand an JEDEN Spieler, der im Spiel ist.
-        // Das ist der entscheidende Schritt.
-        console.log(`[${now()}] Action valid, broadcasting game_state to players: ${playersInGame.join(', ')}`);
-        playersInGame.forEach(playerId => {
-            sendToClient(playerId, newGameState);
+        // Zusätzliches Logging, damit du siehst, was passiert
+        console.log(`[${now()}] Aktion von ${clientId} war gültig. Sende neuen Spielzustand an: ${playersInGame.join(', ')}`);
+        console.log(`[${now()}] Neuer currentPlayerId: ${newGameStatePayload.currentPlayerId}`);
+
+        // Sende die Nachricht manuell an jeden einzelnen Spieler.
+        playersInGame.forEach(player_id => {
+            sendToClient(player_id, newGameStatePayload);
         });
+    } else {
+        // Zusätzliches Logging für den Fehlerfall
+        console.log(`[${now()}] Aktion von ${clientId} war UNGÜLTIG. (Wahrscheinlich nicht am Zug). Kein Update gesendet.`);
     }
 }
+
 // ========================================================================
 
 
-// For debugging: export internal maps (only in debug mode, remove in prod)
+// For debugging
 export function __debugDump() {
     return {
         rooms: Array.from(rooms.entries()).map(([id, r]) => ({ id, ownerId: r.ownerId, players: r.players, playerNames: r.playerNames, hasGame: !!r.game })),
