@@ -1,13 +1,12 @@
 // Dateiname: roomManager.js
-// FINALE VERSION - Basiert auf deiner funktionierenden "DIAGNOSTIC VERSION"
-// mit der EINEN entscheidenden Korrektur in handleGameAction.
+// FINALE DEBUG-VERSION: Basiert auf deiner funktionierenden Version mit extremem Logging.
 
 import { broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
 
 const rooms = new Map();
-const userRooms = new Map(); // clientId -> roomId
-const roomDeletionTimers = new Map(); // roomId -> timerId
+const userRooms = new Map();
+const roomDeletionTimers = new Map();
 
 function now() { return (new Date()).toISOString(); }
 
@@ -20,7 +19,6 @@ export function broadcastRoomList() {
     broadcast({ type: "room_update", rooms: roomList });
 }
 
-// DEINE FUNKTIONIERENDE getFullRoomState - WIRD NICHT VERÄNDERT
 function getFullRoomState(room) {
     if (!room) return null;
     const gameState = room.game ? room.game.getState() : {};
@@ -34,6 +32,7 @@ function getFullRoomState(room) {
     };
 }
 
+// ... (alle deine anderen Funktionen wie createRoom, joinRoom etc. bleiben hier unverändert)
 export function createRoom(clientId, ownerUsername, name, options) {
     if (!ownerUsername) return;
     if (userRooms.has(clientId)) leaveRoom(clientId);
@@ -219,30 +218,26 @@ export function handleGameAction(clientId, action) {
     const room = rooms.get(roomId);
     if (!room || !room.game) return;
 
-    // Führe die Aktion in der Game-Logik aus.
     const actionWasValid = room.game.handleAction(clientId, action);
 
-    // Wenn die Aktion gültig war:
     if (actionWasValid) {
-        // 1. Hole den neuen Zustand mit DEINER funktionierenden `getFullRoomState` Funktion.
-        //    Dadurch bleiben Namen, Cams etc. erhalten.
+        console.log(`[DEBUG] Aktion von ${clientId} war gültig.`);
         const newFullState = getFullRoomState(room);
-        
-        // 2. Hole die Liste der Spieler direkt aus der Game-Instanz.
-        //    Das ist die garantiert korrekte Liste der aktiven Spieler.
         const playersToNotify = room.game.players;
 
-        // 3. Sende den neuen Zustand manuell an JEDEN Spieler.
-        console.log(`[FIXED] Aktion von ${clientId} gültig. Sende Update an ${playersToNotify.join(', ')}.`);
+        console.log(`[DEBUG] Neuer currentPlayerId ist: ${newFullState.currentPlayerId}`);
+        console.log(`[DEBUG] Sende diesen Zustand jetzt an: ${playersToNotify.join(', ')}`);
+
         playersToNotify.forEach(id => {
+            console.log(`[DEBUG] -> Sende an Client ${id}`);
             sendToClient(id, newFullState);
         });
+    } else {
+        console.log(`[DEBUG] Aktion von ${clientId} war UNGÜLTIG (wahrscheinlich nicht am Zug).`);
     }
 }
 // ========================================================================
 
-
-// For debugging
 export function __debugDump() {
     return {
         rooms: Array.from(rooms.entries()).map(([id, r]) => ({ id, ownerId: r.ownerId, players: r.players, playerNames: r.playerNames, hasGame: !!r.game })),
