@@ -1,5 +1,6 @@
 // Dateiname: roomManager.js
-// FINALE KORREKTUR: Basiert auf deiner funktionierenden Version, erweitert für Multi-Game-Support, OHNE Client-Code.
+// FINALE KORREKTUR: Basiert auf deiner funktionierenden Version mit extremem Logging.
+// Korrekt erweitert für Multi-Game-Support.
 
 import { broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
@@ -16,7 +17,7 @@ export function broadcastRoomList() {
         id: r.id, name: r.name, owner: r.ownerUsername,
         playerCount: r.playerNames.filter(p => p).length,
         maxPlayers: r.maxPlayers, isStarted: !!r.game?.isStarted,
-        variant: r.options?.variant || 'x01' // *** HINZUGEFÜGT: Sendet die Spielvariante an die Lobby ***
+        variant: r.options?.variant || 'x01' // *** GEÄNDERT: Sendet die Spielvariante an die Lobby ***
     }));
     broadcast({ type: "room_update", rooms: roomList });
 }
@@ -51,7 +52,7 @@ export function createRoom(clientId, ownerUsername, name, options) {
     userRooms.set(clientId, roomId);
     console.log(`[${now()}] createRoom: ${roomId} owner=${ownerUsername}(${clientId})`);
     broadcastRoomList();
-    // *** GEÄNDERT: Sendet die Variante zurück, damit der Ersteller korrekt weitergeleitet werden kann ***
+    // *** GEÄNDERT: Sendet die Variante zurück, damit der Ersteller korrekt weitergeleitet wird ***
     sendToClient(clientId, { type: "room_created", roomId: roomId, variant: options.variant });
 }
 
@@ -123,7 +124,7 @@ export function leaveRoom(clientId) {
     }
 }
 
-// *** GEÄNDERT: Diese Funktion startet jetzt das korrekte Spiel (x01 oder Cricket) ***
+// *** GEÄNDERT: Startet jetzt das korrekte Spiel (x01 oder Cricket) ***
 export function startGame(ownerId, opts = {}) {
     const roomId = userRooms.get(ownerId);
     if (!roomId) {
@@ -147,13 +148,19 @@ export function startGame(ownerId, opts = {}) {
         return;
     }
 
-    console.log(`[${now()}] startGame invoked by owner=${ownerId} room=${roomId} variant=${room.options.variant}`);
+    const gameOptions = Object.assign({}, room.options || {}, opts.options || {});
+    if (opts.startingMode) gameOptions.startingMode = opts.startingMode;
+    if (opts.startingPlayerId) gameOptions.startingPlayerId = opts.startingPlayerId;
+
+    console.log(`[${now()}] startGame invoked by owner=${ownerId} room=${roomId} opts.startingPlayerId=${gameOptions.startingPlayerId || '(none)'} opts.startingMode=${gameOptions.startingMode || '(none)'}`);
 
     // Logik zur Spielauswahl
     if (room.options.variant === 'cricket') {
-        room.game = new CricketGame(actualPlayers, room.options);
+        room.game = new CricketGame(actualPlayers, gameOptions);
+        console.log(`[${now()}] CricketGame Instanz für Raum ${roomId} erstellt.`);
     } else {
-        room.game = new Game(actualPlayers, room.options);
+        room.game = new Game(actualPlayers, gameOptions);
+        console.log(`[${now()}] Game (x01) Instanz für Raum ${roomId} erstellt.`);
     }
 
     broadcastToPlayers(room.players.filter(p => p), getFullRoomState(room));
@@ -180,15 +187,44 @@ export function requestStartGame(requesterId, payload = {}) {
     }
 
     const ownerId = room.ownerId;
-    
-    // Wir rufen direkt startGame auf, da deine Logik das ohnehin tut.
-    // Die komplexeren Optionen aus deinem Original habe ich hier entfernt, da sie direkt in startGame münden.
-    if (ownerId && room.players.includes(ownerId)) {
-        console.log(`[${now()}] requestStartGame: starting game ON BEHALF OF owner ${ownerId}`);
-        startGame(ownerId, payload);
+    const startOpts = { options: payload.options || {} };
+
+    if (payload.requestType === "bull" || (payload.options && payload.options.startChoice === "bull")) {
+        startOpts.startingMode = "bull";
+    }
+
+    if (payload.startingPlayerId) {
+        startOpts.startingPlayerId = payload.startingPlayerId;
+    } else if (payload.desiredStarter === "me" || payload.desiredStarter === "request_opponent" || payload.desiredStarter === "request_self") {
+        startOpts.startingPlayerId = requesterId;
     } else {
-        console.log(`[${now()}] requestStartGame: owner missing, starting directly with requester as effective owner.`);
-        startGame(requesterId, payload);
+        startOpts.startingPlayerId = requesterId;
+    }
+
+    console.log(`[${now()}] requestStartGame -> owner=${ownerId} will be asked to start with starter=${startOpts.startingPlayerId}`);
+
+    if (ownerId) {
+        sendToClient(ownerId, { type: "debug_start_request_received", requesterId, payload: startOpts, timestamp: now() });
+    }
+    sendToClient(requesterId, { type: "debug_start_request_sent", toOwner: ownerId, payload: startOpts, timestamp: now() });
+
+    if (ownerId && room.players.includes(ownerId)) {
+        console.log(`[${now()}] requestStartGame: starting game ON BEHALF OF owner ${ownerId} with starter ${startOpts.startingPlayerId}`);
+        startGame(ownerId, startOpts);
+    } else {
+        startOpts.startingPlayerId = startOpts.startingPlayerId || requesterId;
+        console.log(`[${now()}] requestStartGame: owner missing, starting directly with ${startOpts.startingPlayerId}`);
+        const actualPlayers = room.players.filter(p => p);
+
+        // *** HIER WURDE DIE GLEICHE SPIELAUSWAHL-LOGIK WIE IN startGame HINZUGEFÜGT ***
+        if (room.options.variant === 'cricket') {
+            room.game = new CricketGame(actualPlayers, Object.assign({}, room.options || {}, startOpts.options, { startingPlayerId: startOpts.startingPlayerId }));
+        } else {
+            room.game = new Game(actualPlayers, Object.assign({}, room.options || {}, startOpts.options, { startingPlayerId: startOpts.startingPlayerId }));
+        }
+
+        broadcastToPlayers(room.players.filter(p => p), getFullRoomState(room));
+        broadcastRoomList();
     }
 }
 
