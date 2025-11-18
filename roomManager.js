@@ -1,246 +1,227 @@
-// Dateiname: roomManager.js
-// FINALE DEBUG-VERSION: Basiert auf deiner funktionierenden Version mit extremem Logging.
+// x01_ws.js — Lobby WebSocket helper (mit robuster Polling-Logik bei auth_ok)
+// FINALE, KORRIGIERTE VERSION BASIEREND AUF DEINEM ORIGINALCODE
 
-import { broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
-import Game from "./game.js";
+(() => {
+  const WS_URL = window.__DOCA?.wsUrl || "wss://doca-server.onrender.com";
+  const USER = window.__DOCA?.username || "Gast";
+  let ws = null;
 
-const rooms = new Map();
-const userRooms = new Map();
-const roomDeletionTimers = new Map();
+  // allow registration for server message callbacks
+  const serverMessageCallbacks = [];
+  function onServerMessage(cb) {
+    if (typeof cb === 'function') serverMessageCallbacks.push(cb);
+  }
+  // expose globally so x01_game.js can register
+  window.onServerMessage = onServerMessage;
 
-function now() { return (new Date()).toISOString(); }
+  // --- Hilfsfunktionen ---
+  function appLog(msg, isSuccess = false) {
+    const el = document.getElementById('log');
+    if (!el) return;
+    const ts = new Date().toTimeString().split(' ')[0];
+    const icon = isSuccess ? '✅' : 'ℹ️';
+    el.innerHTML = `<div>[${ts}] ${icon} ${escapeHtml(msg)}</div>` + el.innerHTML;
+  }
 
-export function broadcastRoomList() {
-    const roomList = Array.from(rooms.values()).map(r => ({
-        id: r.id, name: r.name, owner: r.ownerUsername,
-        playerCount: r.playerNames.filter(p => p).length,
-        maxPlayers: r.maxPlayers, isStarted: !!r.game?.isStarted,
-    }));
-    broadcast({ type: "room_update", rooms: roomList });
-}
+  function escapeHtml(s) { return String(s).replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 
-function getFullRoomState(room) {
-    if (!room) return null;
-    const gameState = room.game ? room.game.getState() : {};
-    return {
-        type: "game_state",
-        id: room.id, name: room.name, ownerId: room.ownerId,
-        players: room.players,
-        playerNames: room.playerNames,
-        maxPlayers: room.maxPlayers,
-        options: room.options, ...gameState,
-    };
-}
-
-// ... (alle deine anderen Funktionen wie createRoom, joinRoom etc. bleiben hier unverändert)
-export function createRoom(clientId, ownerUsername, name, options) {
-    if (!ownerUsername) return;
-    if (userRooms.has(clientId)) leaveRoom(clientId);
-    const roomId = Math.random().toString(36).slice(2, 9);
-    const room = {
-        id: roomId, name: name || `Raum von ${ownerUsername}`,
-        ownerId: clientId, ownerUsername: ownerUsername,
-        players: [clientId, null],
-        playerNames: [ownerUsername, null],
-        maxPlayers: 2, options: { ...options, startingScore: options && options.distance ? options.distance : 501 }, game: null,
-    };
-    rooms.set(roomId, room);
-    userRooms.set(clientId, roomId);
-    console.log(`[${now()}] createRoom: ${roomId} owner=${ownerUsername}(${clientId})`);
-    broadcastRoomList();
-    sendToClient(clientId, { type: "room_created", roomId: roomId });
-}
-
-export function joinRoom(clientId, username, roomId) {
-    console.log(`[${now()}] joinRoom called: client=${clientId} username=${username} roomId=${roomId}`);
-    if (!username) return;
-    const room = rooms.get(roomId);
-    if (!room) {
-        console.log(`[${now()}] joinRoom: room not found ${roomId}`);
-        sendToClient(clientId, { type: "error", message: "Raum nicht gefunden." });
-        return;
-    }
-
-    if (roomDeletionTimers.has(roomId)) {
-        clearTimeout(roomDeletionTimers.get(roomId));
-        roomDeletionTimers.delete(roomId);
-        console.log(`[${now()}] Lösch-Timer für Raum ${roomId} abgebrochen.`);
-    }
-
-    const playerIndex = room.playerNames.indexOf(username);
-    if (playerIndex !== -1) {
-        room.players[playerIndex] = clientId;
-        if(room.ownerUsername === username) room.ownerId = clientId;
-        userRooms.set(clientId, roomId);
-        console.log(`[${now()}] joinRoom: reconnected ${username} -> slot ${playerIndex}`);
+  function safeSend(obj) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try { ws.send(JSON.stringify(obj)); } catch(e) { console.error("ws.send error", e); }
     } else {
-        const emptyIndex = room.playerNames.indexOf(null);
-        if (emptyIndex !== -1) {
-            room.players[emptyIndex] = clientId;
-            room.playerNames[emptyIndex] = username;
-            userRooms.set(clientId, roomId);
-            console.log(`[${now()}] joinRoom: new player ${username} -> slot ${emptyIndex}`);
-        } else {
-            console.log(`[${now()}] joinRoom: room full ${roomId}`);
-            sendToClient(clientId, { type: "error", message: "Raum ist voll." });
-            return;
+      // Silently queue (ws class also queues), but log for debugging
+      console.log("safeSend: ws not open, queueing or ignoring:", obj);
+    }
+  }
+  window.sendWS = safeSend;
+
+  // --- Rendering-Funktionen (UI-Updates) ---
+  function renderRooms(list) {
+    const container = document.getElementById('roomList');
+    if (!container) return;
+    container.innerHTML = '';
+    if (!Array.isArray(list) || list.length === 0) {
+      container.innerHTML = '<div class="muted" style="padding: 10px;">Keine Räume offen</div>';
+      return;
+    }
+    list.forEach(r => {
+      const item = document.createElement('div');
+      item.className = 'room-item';
+      item.dataset.roomId = r.id;
+      const ownerDisplay = `Host: ${escapeHtml(r.owner || '...')}`;
+      const variantText = (r.variant === 'cricket') ? ' (Cricket)' : '';
+      
+      // *** HIER IST DIE 1. ÄNDERUNG: data-variant="${escapeHtml(r.variant || 'x01')}" WURDE HINZUGEFÜGT ***
+      // und der variantText für die Anzeige im Raum-Namen
+      item.innerHTML = `
+        <div class="room-left">
+          <div class="room-name">${escapeHtml(r.name)}${variantText}</div>
+          <div class="players-inline">${ownerDisplay} | ${r.playerCount}/${r.maxPlayers} Spieler</div>
+        </div>
+        <div><button class="btn join-room" data-roomid="${escapeHtml(r.id)}" data-variant="${escapeHtml(r.variant || 'x01')}">Beitreten</button></div>`;
+      container.appendChild(item);
+    });
+
+    // *** HIER IST DIE 2. ÄNDERUNG: DIE LOGIK FRAGT DIE VARIANTE AB UND LEITET KORREKT WEITER ***
+    container.querySelectorAll('button.join-room').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const rid = e.currentTarget.getAttribute('data-roomid');
+        const variant = e.currentTarget.getAttribute('data-variant');
+        if (rid) {
+            if (variant === 'cricket') {
+                window.location.href = `cricket_game.php?roomId=${encodeURIComponent(rid)}`;
+            } else {
+                window.location.href = `x01_game.php?roomId=${encodeURIComponent(rid)}`;
+            }
         }
+      });
+    });
+  }
+
+  function renderOnline(arr) {
+    const el = document.getElementById('onlineList');
+    if (!el) return;
+    if (!arr || arr.length === 0) {
+        el.innerHTML = "<em>Niemand online</em>";
+        return;
     }
-    broadcastToPlayers(room.players, getFullRoomState(room));
-    broadcastRoomList();
-}
+    el.innerHTML = arr.map(u => `<div class="online-item"><span class="bullet"></span>${escapeHtml(u)}</div>`).join('');
+  }
 
-export function leaveRoom(clientId) {
-    const roomId = userRooms.get(clientId);
-    if (!roomId || !rooms.has(roomId)) return;
-    const room = rooms.get(roomId);
-    const playerIndex = room.players.indexOf(clientId);
+  function appendChat(user, message) {
+      const box = document.getElementById('chatMessages');
+      if (!box) return;
+      const ts = new Date().toTimeString().split(' ')[0];
+      const div = document.createElement('div');
+      div.innerHTML = `<span style="color:var(--muted);font-size:12px">[${ts}]</span> <strong style="color:var(--accent)">${escapeHtml(user)}:</strong> <span style="margin-left:6px;color:#fff">${escapeHtml(message)}</span>`;
+      box.appendChild(div);
+      box.scrollTop = box.scrollHeight;
+  }
+  
+  // --- WebSocket-Nachrichtenverarbeitung ---
+  function defaultHandleServerMessage(data) {
+    if (!data || !data.type) return;
 
-    if (playerIndex !== -1) {
-        room.players[playerIndex] = null;
-        userRooms.delete(clientId);
-        console.log(`[${now()}] leaveRoom: ${clientId} left room ${roomId} (slot ${playerIndex})`);
-        
-        if (room.players.every(p => p === null)) {
-            console.log(`[${now()}] Raum ${roomId} ist leer. Starte 15-Sekunden-Lösch-Timer.`);
-            const timer = setTimeout(() => {
-                if (room.players.every(p => p === null)) {
-                    rooms.delete(roomId);
-                    console.log(`[${now()}] Raum ${roomId} nach Inaktivität gelöscht.`);
-                    broadcastRoomList();
-                }
-                roomDeletionTimers.delete(roomId);
-            }, 15000);
-            roomDeletionTimers.set(roomId, timer);
+    // keep old behavior for lobby convenience
+    const t = (data.type || "").toLowerCase();
+    switch(t) {
+        case 'room_update': 
+            // stop polling if we were polling for rooms
+            stopPollingFor('rooms');
+            renderRooms(data.rooms || []); 
+            break;
+        case 'online_list': 
+            // stop polling if we were polling for online
+            stopPollingFor('online');
+            renderOnline(data.users || []); 
+            break;
+        case 'chat_global': appendChat(data.user || 'Gast', data.message || ''); break;
+        default:
+          // no-op default; other handlers can use onServerMessage
+          break;
+    }
+  }
+
+  // --- Polling helpers: used to retry list_rooms/list_online until server responds ---
+  let _pollTimers = { rooms: null, online: null };
+  let _pollAttempts = { rooms: 0, online: 0 };
+  const POLL_INTERVAL_MS = 3000;
+  const POLL_MAX_ATTEMPTS = 10;
+
+  function startPollingFor(kind) {
+    if (kind !== 'rooms' && kind !== 'online') return;
+    if (_pollTimers[kind]) return; // already polling
+    _pollAttempts[kind] = 0;
+    _pollTimers[kind] = setInterval(() => {
+      _pollAttempts[kind]++;
+      if (kind === 'rooms') safeSend({ type: 'list_rooms' });
+      else safeSend({ type: 'list_online' });
+      if (_pollAttempts[kind] >= POLL_MAX_ATTEMPTS) {
+        clearInterval(_pollTimers[kind]);
+        _pollTimers[kind] = null;
+        appLog(`Keine ${kind}-Antwort nach ${POLL_MAX_ATTEMPTS} Versuchen`, false);
+      }
+    }, POLL_INTERVAL_MS);
+    // send immediately once
+    if (kind === 'rooms') safeSend({ type: 'list_rooms' });
+    else safeSend({ type: 'list_online' });
+  }
+
+  function stopPollingFor(kind) {
+    if (kind !== 'rooms' && kind !== 'online') return;
+    if (_pollTimers[kind]) {
+      clearInterval(_pollTimers[kind]);
+      _pollTimers[kind] = null;
+      _pollAttempts[kind] = 0;
+    }
+  }
+
+  // --- Hauptlogik zum Verbinden ---
+  function start() {
+    ws = new WebSocket(WS_URL);
+
+    ws.addEventListener('open', (ev) => {
+      appLog('Verbindung hergestellt. Authentifiziere...', true);
+      safeSend({ type: 'auth', payload: { username: USER } });
+    });
+
+    ws.addEventListener('message', (ev) => {
+      try {
+        const d = JSON.parse(ev.data);
+
+        // === NORMALIZE: if server uses a payload object, merge payload up one level.
+        // This makes handlers (e.g. game_state) see fields like currentPlayerId, players, winner, etc.
+        let msg;
+        if (d && typeof d === 'object' && d.payload && typeof d.payload === 'object') {
+          // Keep type at top-level and merge payload; payload fields override nothing important except explicit payload keys.
+          msg = Object.assign({}, d.payload);
+          // ensure type stays on top-level
+          msg.type = d.type;
+          // preserve any meta fields from root that are not in payload (if needed)
+          Object.keys(d).forEach(k => {
+            if (k !== 'payload' && k !== 'type' && !(k in msg)) msg[k] = d[k];
+          });
         } else {
-            broadcastToPlayers(room.players, getFullRoomState(room));
+          msg = d;
         }
-        broadcastRoomList();
-    }
-}
 
-export function startGame(ownerId, opts = {}) {
-    const roomId = userRooms.get(ownerId);
-    if (!roomId) {
-        console.log(`[${now()}] startGame denied: owner ${ownerId} not in any room`);
-        return;
-    }
-    const room = rooms.get(roomId);
-    if (!room) {
-        console.log(`[${now()}] startGame denied: room ${roomId} missing`);
-        return;
-    }
-    if (room.ownerId !== ownerId) {
-        console.log(`[${now()}] startGame denied: ${ownerId} is not owner of ${roomId}`);
-        return;
-    }
+        // call default handler for basic UI updates using normalized msg
+        defaultHandleServerMessage(msg);
+        // notify all registered callbacks (x01_game.js expects this) with normalized msg
+        try {
+          serverMessageCallbacks.forEach(cb => {
+            try { cb(msg); } catch(e) { console.error('onServerMessage callback error', e); }
+          });
+        } catch(e){ console.error('server callback loop error', e); }
 
-    const actualPlayers = room.players.filter(p => p);
-    if (actualPlayers.length < 2) {
-        console.log(`[${now()}] startGame aborted: not enough players in ${roomId}`);
-        sendToClient(ownerId, { type: "error", message: "Nicht genug Spieler zum Starten." });
-        return;
-    }
+        // Special-case: still check auth_ok on original message type (server might not include it in payload)
+        if (d.type === 'auth_ok' || (msg.type && msg.type === 'auth_ok')) {
+          appLog('Authentifizierung erfolgreich.', true);
+          // initial requests: use polling to be robust against server cold-start
+          startPollingFor('rooms');
+          startPollingFor('online');
+        }
+      } catch(e) { /* ignoriere ungültige Nachrichten */ console.error('invalid ws message', e); }
+    });
 
-    const gameOptions = Object.assign({}, room.options || {}, opts.options || {});
-    if (opts.startingMode) gameOptions.startingMode = opts.startingMode;
-    if (opts.startingPlayerId) gameOptions.startingPlayerId = opts.startingPlayerId;
+    ws.addEventListener('close', (ev) => {
+      appLog('Verbindung getrennt. Versuche erneut...', false);
+      renderOnline(['Verbindung verloren...']);
+      // also notify game/UI callbacks about disconnect so they can recover
+      try {
+        const disconnectMsg = { type: 'connection_closed' };
+        serverMessageCallbacks.forEach(cb => { try { cb(disconnectMsg); } catch(e){} });
+      } catch(e){}
+      // clear any poll timers
+      stopPollingFor('rooms'); stopPollingFor('online');
+      setTimeout(start, 3000);
+    });
 
-    console.log(`[${now()}] startGame invoked by owner=${ownerId} room=${roomId} opts.startingPlayerId=${gameOptions.startingPlayerId || '(none)'} opts.startingMode=${gameOptions.startingMode || '(none)'}`);
-
-    room.game = new Game(actualPlayers, gameOptions);
-
-    broadcastToPlayers(room.players, getFullRoomState(room));
-    sendToClient(ownerId, { type: "debug_game_started", startingPlayerId: room.game.players[room.game.currentPlayerIndex], timestamp: now() });
-    broadcastToPlayers(room.players, { type: "debug_first_player", startingPlayerId: room.game.players[room.game.currentPlayerIndex], timestamp: now() });
-    console.log(`[${now()}] Game started in room ${roomId}. first=${room.game.players[room.game.currentPlayerIndex]}`);
-    broadcastRoomList();
-}
-
-export function requestStartGame(requesterId, payload = {}) {
-    const roomId = payload.roomId || userRooms.get(requesterId);
-    console.log(`[${now()}] requestStartGame called by ${requesterId} payload=${JSON.stringify(payload)} inferredRoom=${roomId}`);
-    if (!roomId || !rooms.has(roomId)) {
-        console.log(`[${now()}] requestStartGame: room not found for ${requesterId}`);
-        sendToClient(requesterId, { type: "error", message: "Raum nicht gefunden." });
-        return;
-    }
-    const room = rooms.get(roomId);
-
-    if (!room.players.includes(requesterId)) {
-        console.log(`[${now()}] requestStartGame: requester ${requesterId} not in room ${roomId}`);
-        sendToClient(requesterId, { type: "error", message: "Du bist nicht in diesem Raum." });
-        return;
-    }
-
-    const ownerId = room.ownerId;
-    const startOpts = { options: payload.options || {} };
-
-    if (payload.requestType === "bull" || (payload.options && payload.options.startChoice === "bull")) {
-        startOpts.startingMode = "bull";
-    }
-
-    if (payload.startingPlayerId) {
-        startOpts.startingPlayerId = payload.startingPlayerId;
-    } else if (payload.desiredStarter === "me" || payload.desiredStarter === "request_opponent" || payload.desiredStarter === "request_self") {
-        startOpts.startingPlayerId = requesterId;
-    } else {
-        startOpts.startingPlayerId = requesterId;
-    }
-
-    console.log(`[${now()}] requestStartGame -> owner=${ownerId} will be asked to start with starter=${startOpts.startingPlayerId}`);
-
-    if (ownerId) {
-        sendToClient(ownerId, { type: "debug_start_request_received", requesterId, payload: startOpts, timestamp: now() });
-    }
-    sendToClient(requesterId, { type: "debug_start_request_sent", toOwner: ownerId, payload: startOpts, timestamp: now() });
-
-    if (ownerId && room.players.includes(ownerId)) {
-        console.log(`[${now()}] requestStartGame: starting game ON BEHALF OF owner ${ownerId} with starter ${startOpts.startingPlayerId}`);
-        startGame(ownerId, startOpts);
-    } else {
-        startOpts.startingPlayerId = startOpts.startingPlayerId || requesterId;
-        console.log(`[${now()}] requestStartGame: owner missing, starting directly with ${startOpts.startingPlayerId}`);
-        const actualPlayers = room.players.filter(p => p);
-        room.game = new Game(actualPlayers, Object.assign({}, room.options || {}, startOpts.options, { startingPlayerId: startOpts.startingPlayerId }));
-        broadcastToPlayers(room.players, getFullRoomState(room));
-        broadcastRoomList();
-    }
-}
-
-// ========================================================================
-// HIER IST DIE EINE, ENTSCHEIDENDE KORREKTUR
-// ========================================================================
-export function handleGameAction(clientId, action) {
-    const roomId = userRooms.get(clientId);
-    if (!roomId) return;
-    
-    const room = rooms.get(roomId);
-    if (!room || !room.game) return;
-
-    const actionWasValid = room.game.handleAction(clientId, action);
-
-    if (actionWasValid) {
-        console.log(`[DEBUG] Aktion von ${clientId} war gültig.`);
-        const newFullState = getFullRoomState(room);
-        const playersToNotify = room.game.players;
-
-        console.log(`[DEBUG] Neuer currentPlayerId ist: ${newFullState.currentPlayerId}`);
-        console.log(`[DEBUG] Sende diesen Zustand jetzt an: ${playersToNotify.join(', ')}`);
-
-        playersToNotify.forEach(id => {
-            console.log(`[DEBUG] -> Sende an Client ${id}`);
-            sendToClient(id, newFullState);
-        });
-    } else {
-        console.log(`[DEBUG] Aktion von ${clientId} war UNGÜLTIG (wahrscheinlich nicht am Zug).`);
-    }
-}
-// ========================================================================
-
-export function __debugDump() {
-    return {
-        rooms: Array.from(rooms.entries()).map(([id, r]) => ({ id, ownerId: r.ownerId, players: r.players, playerNames: r.playerNames, hasGame: !!r.game })),
-        userRooms: Array.from(userRooms.entries()),
-    };
-}
+    ws.addEventListener('error', (err) => {
+        appLog('WebSocket Fehler', false);
+        console.error("Lobby WebSocket Error:", err);
+    });
+  }
+  
+  start();
+})();
