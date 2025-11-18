@@ -1,10 +1,8 @@
 // Dateiname: roomManager.js
-// FINALE KORREKTUR: Basiert auf deiner funktionierenden Version mit extremem Logging.
-// Korrekt erweitert für Multi-Game-Support.
+// FINALE DEBUG-VERSION: Basiert auf deiner funktionierenden Version mit extremem Logging.
 
 import { broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
-import CricketGame from "./cricketGame.js"; // *** HINZUGEFÜGT: Import für die Cricket-Logik ***
 
 const rooms = new Map();
 const userRooms = new Map();
@@ -17,7 +15,6 @@ export function broadcastRoomList() {
         id: r.id, name: r.name, owner: r.ownerUsername,
         playerCount: r.playerNames.filter(p => p).length,
         maxPlayers: r.maxPlayers, isStarted: !!r.game?.isStarted,
-        variant: r.options?.variant || 'x01' // *** GEÄNDERT: Sendet die Spielvariante an die Lobby ***
     }));
     broadcast({ type: "room_update", rooms: roomList });
 }
@@ -35,6 +32,7 @@ function getFullRoomState(room) {
     };
 }
 
+// ... (alle deine anderen Funktionen wie createRoom, joinRoom etc. bleiben hier unverändert)
 export function createRoom(clientId, ownerUsername, name, options) {
     if (!ownerUsername) return;
     if (userRooms.has(clientId)) leaveRoom(clientId);
@@ -44,16 +42,13 @@ export function createRoom(clientId, ownerUsername, name, options) {
         ownerId: clientId, ownerUsername: ownerUsername,
         players: [clientId, null],
         playerNames: [ownerUsername, null],
-        maxPlayers: 2, 
-        options: { ...options, startingScore: options && options.distance ? options.distance : 501 }, 
-        game: null,
+        maxPlayers: 2, options: { ...options, startingScore: options && options.distance ? options.distance : 501 }, game: null,
     };
     rooms.set(roomId, room);
     userRooms.set(clientId, roomId);
     console.log(`[${now()}] createRoom: ${roomId} owner=${ownerUsername}(${clientId})`);
     broadcastRoomList();
-    // *** GEÄNDERT: Sendet die Variante zurück, damit der Ersteller korrekt weitergeleitet wird ***
-    sendToClient(clientId, { type: "room_created", roomId: roomId, variant: options.variant });
+    sendToClient(clientId, { type: "room_created", roomId: roomId });
 }
 
 export function joinRoom(clientId, username, roomId) {
@@ -91,7 +86,7 @@ export function joinRoom(clientId, username, roomId) {
             return;
         }
     }
-    broadcastToPlayers(room.players.filter(p => p), getFullRoomState(room));
+    broadcastToPlayers(room.players, getFullRoomState(room));
     broadcastRoomList();
 }
 
@@ -118,13 +113,12 @@ export function leaveRoom(clientId) {
             }, 15000);
             roomDeletionTimers.set(roomId, timer);
         } else {
-            broadcastToPlayers(room.players.filter(p => p), getFullRoomState(room));
+            broadcastToPlayers(room.players, getFullRoomState(room));
         }
         broadcastRoomList();
     }
 }
 
-// *** GEÄNDERT: Startet jetzt das korrekte Spiel (x01 oder Cricket) ***
 export function startGame(ownerId, opts = {}) {
     const roomId = userRooms.get(ownerId);
     if (!roomId) {
@@ -154,18 +148,11 @@ export function startGame(ownerId, opts = {}) {
 
     console.log(`[${now()}] startGame invoked by owner=${ownerId} room=${roomId} opts.startingPlayerId=${gameOptions.startingPlayerId || '(none)'} opts.startingMode=${gameOptions.startingMode || '(none)'}`);
 
-    // Logik zur Spielauswahl
-    if (room.options.variant === 'cricket') {
-        room.game = new CricketGame(actualPlayers, gameOptions);
-        console.log(`[${now()}] CricketGame Instanz für Raum ${roomId} erstellt.`);
-    } else {
-        room.game = new Game(actualPlayers, gameOptions);
-        console.log(`[${now()}] Game (x01) Instanz für Raum ${roomId} erstellt.`);
-    }
+    room.game = new Game(actualPlayers, gameOptions);
 
-    broadcastToPlayers(room.players.filter(p => p), getFullRoomState(room));
+    broadcastToPlayers(room.players, getFullRoomState(room));
     sendToClient(ownerId, { type: "debug_game_started", startingPlayerId: room.game.players[room.game.currentPlayerIndex], timestamp: now() });
-    broadcastToPlayers(room.players.filter(p => p), { type: "debug_first_player", startingPlayerId: room.game.players[room.game.currentPlayerIndex], timestamp: now() });
+    broadcastToPlayers(room.players, { type: "debug_first_player", startingPlayerId: room.game.players[room.game.currentPlayerIndex], timestamp: now() });
     console.log(`[${now()}] Game started in room ${roomId}. first=${room.game.players[room.game.currentPlayerIndex]}`);
     broadcastRoomList();
 }
@@ -215,19 +202,15 @@ export function requestStartGame(requesterId, payload = {}) {
         startOpts.startingPlayerId = startOpts.startingPlayerId || requesterId;
         console.log(`[${now()}] requestStartGame: owner missing, starting directly with ${startOpts.startingPlayerId}`);
         const actualPlayers = room.players.filter(p => p);
-
-        // *** HIER WURDE DIE GLEICHE SPIELAUSWAHL-LOGIK WIE IN startGame HINZUGEFÜGT ***
-        if (room.options.variant === 'cricket') {
-            room.game = new CricketGame(actualPlayers, Object.assign({}, room.options || {}, startOpts.options, { startingPlayerId: startOpts.startingPlayerId }));
-        } else {
-            room.game = new Game(actualPlayers, Object.assign({}, room.options || {}, startOpts.options, { startingPlayerId: startOpts.startingPlayerId }));
-        }
-
-        broadcastToPlayers(room.players.filter(p => p), getFullRoomState(room));
+        room.game = new Game(actualPlayers, Object.assign({}, room.options || {}, startOpts.options, { startingPlayerId: startOpts.startingPlayerId }));
+        broadcastToPlayers(room.players, getFullRoomState(room));
         broadcastRoomList();
     }
 }
 
+// ========================================================================
+// HIER IST DIE EINE, ENTSCHEIDENDE KORREKTUR
+// ========================================================================
 export function handleGameAction(clientId, action) {
     const roomId = userRooms.get(clientId);
     if (!roomId) return;
@@ -240,7 +223,7 @@ export function handleGameAction(clientId, action) {
     if (actionWasValid) {
         console.log(`[DEBUG] Aktion von ${clientId} war gültig.`);
         const newFullState = getFullRoomState(room);
-        const playersToNotify = room.players.filter(p => p);
+        const playersToNotify = room.game.players;
 
         console.log(`[DEBUG] Neuer currentPlayerId ist: ${newFullState.currentPlayerId}`);
         console.log(`[DEBUG] Sende diesen Zustand jetzt an: ${playersToNotify.join(', ')}`);
@@ -253,6 +236,7 @@ export function handleGameAction(clientId, action) {
         console.log(`[DEBUG] Aktion von ${clientId} war UNGÜLTIG (wahrscheinlich nicht am Zug).`);
     }
 }
+// ========================================================================
 
 export function __debugDump() {
     return {
