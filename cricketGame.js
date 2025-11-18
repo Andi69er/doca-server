@@ -1,4 +1,4 @@
-// serverdaten/cricketGame.js (NEUE DATEI)
+// serverdaten/cricketGame.js (KORRIGIERT - OHNE DEN FEHLERHAFTEN SELBST-IMPORT)
 // Eigene Spiel-Logik Klasse nur für Cricket
 
 export default class CricketGame {
@@ -59,7 +59,7 @@ export default class CricketGame {
         const { value, multiplier } = dart;
         const validTargets = [20, 19, 18, 17, 16, 15, 25];
 
-        if (!validTargets.includes(value)) return false;
+        if (!validTargets.includes(value) || !multiplier) return false;
 
         const opponentId = this.players.find(p => p !== clientId);
 
@@ -69,7 +69,7 @@ export default class CricketGame {
             } else {
                 // Spieler hat das Feld schon zu, jetzt wird gepunktet
                 // Bedingung: Der Gegner darf das Feld noch nicht zu haben
-                if (!this.closedNumbers[opponentId]?.[value]) {
+                if (opponentId && !this.closedNumbers[opponentId]?.[value]) {
                     this.scores[clientId] += value;
                 }
             }
@@ -78,25 +78,30 @@ export default class CricketGame {
         // Prüfen, ob ein Feld geschlossen wurde
         validTargets.forEach(num => {
             if (this.hits[clientId][num] >= 3) this.closedNumbers[clientId][num] = true;
-            if (this.hits[opponentId][num] >= 3) this.closedNumbers[opponentId][num] = true;
+            if (opponentId && this.hits[opponentId][num] >= 3) this.closedNumbers[opponentId][num] = true;
         });
 
         // Wurf zur Historie hinzufügen
         const prefix = {1: 'S', 2: 'D', 3: 'T'}[multiplier] || '';
-        const target = value === 25 ? (multiplier === 2 ? 'DB' : 'SB') : value;
-        if(value === 25 && multiplier === 1) this.throwHistory[clientId].push('SB');
-        else this.throwHistory[clientId].push(prefix + target);
-
+        let target;
+        if (value === 25) {
+            target = (multiplier === 1) ? 'SB' : 'DB';
+            this.throwHistory[clientId].push(target);
+        } else {
+            target = value;
+            this.throwHistory[clientId].push(prefix + target);
+        }
 
         this.checkWinCondition(clientId);
 
-        // Nach jedem Wurf den Spieler wechseln (vereinfachte Logik für Web-Darts)
+        // Nach jedem Wurf den Spieler wechseln
         this.nextPlayer();
         return true;
     }
 
     checkWinCondition(clientId) {
         const opponentId = this.players.find(p => p !== clientId);
+        if (!opponentId) return;
         
         const clientHasAllClosed = Object.keys(this.hits[clientId]).every(num => this.hits[clientId][num] >= 3);
 
@@ -108,130 +113,5 @@ export default class CricketGame {
     nextPlayer() {
         if (this.winner) return;
         this.currentPlayerIndex = (this.currentPlayerIndex + 1) % this.players.length;
-    }
-}
-// roomManager.js (FINALE, STABILE VERSION 11.0 - Multi-Game-Support)
-import { broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
-import Game from "./game.js"; // Für x01
-import CricketGame from "./cricketGame.js"; // Für Cricket
-
-const rooms = new Map();
-const userRooms = new Map(); // clientId -> roomId
-const roomDeletionTimers = new Map(); // roomId -> timerId
-
-export function broadcastRoomList() {
-    const roomList = Array.from(rooms.values()).map(r => ({
-        id: r.id, name: r.name, owner: r.ownerUsername,
-        playerCount: r.playerNames.filter(p => p).length,
-        maxPlayers: r.maxPlayers, isStarted: !!r.game?.isStarted,
-        variant: r.options?.variant || 'x01' // WICHTIG: Variante an Lobby senden
-    }));
-    broadcast({ type: "room_update", rooms: roomList });
-}
-
-function getFullRoomState(room) {
-    if (!room) return null;
-    const gameState = room.game ? room.game.getState() : {};
-    return {
-        type: "game_state",
-        id: room.id, name: room.name, ownerId: room.ownerId,
-        players: room.players,
-        playerNames: room.playerNames,
-        maxPlayers: room.maxPlayers, 
-        options: room.options, ...gameState,
-    };
-}
-
-export function createRoom(clientId, ownerUsername, name, options) {
-    if (!ownerUsername) return;
-    if (userRooms.has(clientId)) leaveRoom(clientId);
-    const roomId = Math.random().toString(36).slice(2, 9);
-    const room = {
-        id: roomId, name: name || `Raum von ${ownerUsername}`,
-        ownerId: clientId, ownerUsername: ownerUsername,
-        players: [clientId, null],
-        playerNames: [ownerUsername, null],
-        maxPlayers: 2, 
-        options: { ...options, startingScore: options.distance }, // startingScore für x01 beibehalten
-        game: null,
-    };
-    rooms.set(roomId, room);
-    userRooms.set(clientId, roomId);
-    broadcastRoomList();
-    sendToClient(clientId, { type: "room_created", roomId: roomId, variant: options.variant });
-}
-
-export function joinRoom(clientId, username, roomId) {
-    if (!username) return;
-    const room = rooms.get(roomId);
-    if (!room) return;
-
-    if (roomDeletionTimers.has(roomId)) {
-        clearTimeout(roomDeletionTimers.get(roomId));
-        roomDeletionTimers.delete(roomId);
-    }
-
-    const playerIndex = room.playerNames.indexOf(username);
-    if (playerIndex !== -1) {
-        room.players[playerIndex] = clientId;
-        if(room.ownerUsername === username) room.ownerId = clientId;
-        userRooms.set(clientId, roomId);
-    } else {
-        const emptyIndex = room.playerNames.indexOf(null);
-        if (emptyIndex !== -1) {
-            room.players[emptyIndex] = clientId;
-            room.playerNames[emptyIndex] = username;
-            userRooms.set(clientId, roomId);
-        }
-    }
-    broadcastToPlayers(room.players, getFullRoomState(room));
-    broadcastRoomList();
-}
-
-export function leaveRoom(clientId) {
-    const roomId = userRooms.get(clientId);
-    if (!roomId || !rooms.has(roomId)) return;
-    const room = rooms.get(roomId);
-    const playerIndex = room.players.indexOf(clientId);
-
-    if (playerIndex !== -1) {
-        room.players[playerIndex] = null;
-        userRooms.delete(clientId);
-        
-        if (room.players.every(p => p === null)) {
-            const timer = setTimeout(() => {
-                if (room.players.every(p => p === null)) {
-                    rooms.delete(roomId);
-                    broadcastRoomList();
-                }
-                roomDeletionTimers.delete(roomId);
-            }, 15000);
-            roomDeletionTimers.set(roomId, timer);
-        } else {
-            broadcastToPlayers(room.players, getFullRoomState(room));
-        }
-        broadcastRoomList();
-    }
-}
-
-export function startGame(clientId) {
-    const room = userRooms.has(clientId) ? rooms.get(userRooms.get(clientId)) : null;
-    if (room && room.ownerId === clientId && room.players.filter(p=>p).length > 1) {
-        
-        // Hier wird entschieden, welche Spiellogik geladen wird
-        if (room.options.variant === 'cricket') {
-            room.game = new CricketGame(room.players.filter(p => p), room.options);
-        } else {
-            room.game = new Game(room.players.filter(p => p), room.options); // Standard ist x01
-        }
-
-        broadcastToPlayers(room.players, getFullRoomState(room));
-    }
-}
-
-export function handleGameAction(clientId, action) {
-    const room = userRooms.has(clientId) ? rooms.get(userRooms.get(clientId)) : null;
-    if (room?.game?.handleAction(clientId, action)) {
-        broadcastToPlayers(room.players, getFullRoomState(room));
     }
 }
