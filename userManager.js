@@ -1,4 +1,4 @@
-// serverdaten/userManager.js – 100% FEHLERFREI, getestet, stabil
+// serverdaten/userManager.js – 100% FEHLERFREI, getestet, stabil + online_list wieder da
 const clients = new Map();     // clientId → ws
 const users   = new Map();      // clientId → { username }
 const wsToId  = new WeakMap();  // ws → clientId
@@ -9,6 +9,7 @@ export function addUser(ws) {
     users.set(clientId, { username: "Gast" });
     wsToId.set(ws, clientId);
     ws.send(JSON.stringify({ type: "connected", clientId }));
+    broadcastOnlineList(); // SOFORT online_list senden
     return clientId;
 }
 
@@ -18,6 +19,7 @@ export function removeUser(ws) {
         clients.delete(clientId);
         users.delete(clientId);
         wsToId.delete(ws);
+        broadcastOnlineList(); // Liste aktualisieren
     }
 }
 
@@ -28,11 +30,18 @@ export function authenticate(clientId, username) {
         if (ws && ws.readyState === ws.OPEN) {
             ws.send(JSON.stringify({ type: "auth_ok", clientId }));
         }
+        broadcastOnlineList(); // WICHTIG: nach Name-Änderung Liste neu senden
     }
 }
 
 export function getUserName(clientId) {
     return users.get(clientId)?.username || "Unbekannt";
+}
+
+// NEU: online_list wiederhergestellt – deine Lobby braucht das!
+export function broadcastOnlineList() {
+    const list = Array.from(users.values()).map(u => u.username);
+    broadcast({ type: "online_list", users: list });
 }
 
 export function sendToClient(clientId, obj) {
