@@ -1,20 +1,16 @@
-// serverdaten/roomManager.js
+// roomManager.js (FINALE, STABILE VERSION 10.0 - Grace-Period-Fix)
 import { broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
-import CricketGame from "./cricketGame.js";
 
 const rooms = new Map();
-const userRooms = new Map();
-const roomDeletionTimers = new Map();
-
-function now() { return (new Date()).toISOString(); }
+const userRooms = new Map(); // clientId -> roomId
+const roomDeletionTimers = new Map(); // roomId -> timerId
 
 export function broadcastRoomList() {
     const roomList = Array.from(rooms.values()).map(r => ({
         id: r.id, name: r.name, owner: r.ownerUsername,
         playerCount: r.playerNames.filter(p => p).length,
         maxPlayers: r.maxPlayers, isStarted: !!r.game?.isStarted,
-        gameMode: r.gameMode || "x01"
     }));
     broadcast({ type: "room_update", rooms: roomList });
 }
@@ -27,62 +23,56 @@ function getFullRoomState(room) {
         id: room.id, name: room.name, ownerId: room.ownerId,
         players: room.players,
         playerNames: room.playerNames,
-        maxPlayers: room.maxPlayers,
-        options: room.options,
-        gameMode: room.gameMode || "x01",
-        ...gameState,
+        maxPlayers: room.maxPlayers, 
+        options: room.options, ...gameState,
     };
 }
 
-export function createRoom(clientId, ownerUsername, name, options = {}) {
+export function createRoom(clientId, ownerUsername, name, options) {
     if (!ownerUsername) return;
     if (userRooms.has(clientId)) leaveRoom(clientId);
     const roomId = Math.random().toString(36).slice(2, 9);
-    const gameMode = options.variant === "cricket" ? "cricket" : "x01";
-
     const room = {
-        id: roomId,
-        name: name || `Raum von ${ownerUsername}`,
-        ownerId: clientId,
-        ownerUsername: ownerUsername,
+        id: roomId, name: name || `Raum von ${ownerUsername}`,
+        ownerId: clientId, ownerUsername: ownerUsername,
         players: [clientId, null],
         playerNames: [ownerUsername, null],
-        maxPlayers: 2,
-        options: options,
-        game: null,
-        gameMode: gameMode
+        maxPlayers: 2, options: { ...options, startingScore: options.distance }, game: null,
     };
     rooms.set(roomId, room);
     userRooms.set(clientId, roomId);
     broadcastRoomList();
-    sendToClient(clientId, { type: "room_created", roomId });
+    sendToClient(clientId, { type: "room_created", roomId: roomId });
 }
 
 export function joinRoom(clientId, username, roomId) {
-    if (!username || !roomId) return;
+    if (!username) return;
     const room = rooms.get(roomId);
     if (!room) return;
 
+    // KERNKORREKTUR 1: Wenn ein Raum beigetreten wird, den Lösch-Timer abbrechen.
     if (roomDeletionTimers.has(roomId)) {
         clearTimeout(roomDeletionTimers.get(roomId));
         roomDeletionTimers.delete(roomId);
+        console.log(`Lösch-Timer für Raum ${roomId} abgebrochen.`);
     }
 
-    const existing = room.playerNames.indexOf(username);
-    if (existing !== -1) {
-        room.players[existing] = clientId;
-        if (room.ownerUsername === username) room.ownerId = clientId;
+    const playerIndex = room.playerNames.indexOf(username);
+    if (playerIndex !== -1) {
+        // Fall 1: Spieler verbindet sich neu
+        room.players[playerIndex] = clientId;
+        if(room.ownerUsername === username) room.ownerId = clientId;
         userRooms.set(clientId, roomId);
     } else {
-        const slot = room.players.indexOf(null);
-        if (slot !== -1) {
-            room.players[slot] = clientId;
-            room.playerNames[slot] = username;
+        // Fall 2: Neuer Spieler
+        const emptyIndex = room.playerNames.indexOf(null);
+        if (emptyIndex !== -1) {
+            room.players[emptyIndex] = clientId;
+            room.playerNames[emptyIndex] = username;
             userRooms.set(clientId, roomId);
         }
     }
-
-    broadcastToPlayers(room.players.filter(Boolean), getFullRoomState(room));
+    broadcastToPlayers(room.players, getFullRoomState(room));
     broadcastRoomList();
 }
 
@@ -90,53 +80,43 @@ export function leaveRoom(clientId) {
     const roomId = userRooms.get(clientId);
     if (!roomId || !rooms.has(roomId)) return;
     const room = rooms.get(roomId);
-    const idx = room.players.indexOf(clientId);
-    if (idx !== -1) {
-        room.players[idx] = null;
+    const playerIndex = room.players.indexOf(clientId);
+
+    if (playerIndex !== -1) {
+        room.players[playerIndex] = null;
         userRooms.delete(clientId);
-        if (room.players.every(p => !p)) {
+        
+        // KERNKORREKTUR 2: Raum nicht sofort löschen, sondern Timer starten.
+        if (room.players.every(p => p === null)) {
+            console.log(`Raum ${roomId} ist leer. Starte 15-Sekunden-Lösch-Timer.`);
             const timer = setTimeout(() => {
-                if (rooms.has(roomId) && rooms.get(roomId).players.every(p => !p)) {
+                // Erneute Prüfung, falls zwischenzeitlich jemand beigetreten ist
+                if (room.players.every(p => p === null)) {
                     rooms.delete(roomId);
-                    broadcastRoomList();
+                    console.log(`Raum ${roomId} nach Inaktivität endgültig gelöscht.`);
+                    broadcastRoomList(); // Alle informieren, dass der Raum weg ist.
                 }
                 roomDeletionTimers.delete(roomId);
-            }, 15000);
+            }, 15000); // 15 Sekunden Grace Period
             roomDeletionTimers.set(roomId, timer);
         } else {
-            broadcastToPlayers(room.players.filter(Boolean), getFullRoomState(room));
-            broadcastRoomList();
+            broadcastToPlayers(room.players, getFullRoomState(room));
         }
+        broadcastRoomList();
     }
 }
 
-export function startGame(ownerId, opts = {}) {
-    const roomId = userRooms.get(ownerId);
-    if (!roomId) return;
-    const room = rooms.get(roomId);
-    if (!room || room.ownerId !== ownerId) return;
-
-    const actualPlayers = room.players.filter(p => p);
-    if (actualPlayers.length < 2) return;
-
-    if (room.gameMode === "cricket") {
-        room.game = new CricketGame(actualPlayers, room.options);
-    } else {
-        room.game = new Game(actualPlayers, room.options);
+export function startGame(clientId) {
+    const room = userRooms.has(clientId) ? rooms.get(userRooms.get(clientId)) : null;
+    if (room && room.ownerId === clientId && room.players.filter(p=>p).length > 1) {
+        room.game = new Game(room.players.filter(p=>p), room.options);
+        broadcastToPlayers(room.players, getFullRoomState(room));
     }
-
-    broadcastToPlayers(actualPlayers, getFullRoomState(room));
-    broadcastRoomList();
 }
 
 export function handleGameAction(clientId, action) {
-    const roomId = userRooms.get(clientId);
-    if (!roomId) return;
-    const room = rooms.get(roomId);
-    if (!room || !room.game) return;
-
-    const valid = room.game.handleAction(clientId, action);
-    if (valid) {
-        broadcastToPlayers(room.players.filter(Boolean), getFullRoomState(room));
+    const room = userRooms.has(clientId) ? rooms.get(userRooms.get(clientId)) : null;
+    if (room?.game?.handleAction(clientId, action)) {
+        broadcastToPlayers(room.players, getFullRoomState(room));
     }
 }
