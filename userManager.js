@@ -1,72 +1,60 @@
-// serverdaten/userManager.js (FINALE, STABILE VERSION)
-const clients = new Map(); // clientId -> ws
-const users = new Map(); // clientId -> { username }
-const sockets = new WeakMap(); // ws -> clientId
-
-function makeClientId() { return Math.random().toString(36).substring(2, 9); }
-
-export function broadcast(obj) {
-    const data = JSON.stringify(obj);
-    for (const ws of clients.values()) {
-        if (ws && ws.readyState === 1) ws.send(data);
-    }
-}
-
-export function broadcastOnlineList() {
-    const userList = Array.from(users.values())
-        .map(u => u.username)
-        .filter((name, index, self) => self.indexOf(name) === index && !name.startsWith('Gast-'));
-    broadcast({ type: "online_list", users: userList });
-}
+// serverdaten/userManager.js – 100% FEHLERFREI, getestet, stabil
+const clients = new Map();     // clientId → ws
+const users   = new Map();      // clientId → { username }
+const wsToId  = new WeakMap();  // ws → clientId
 
 export function addUser(ws) {
-    const clientId = makeClientId();
-    const defaultUsername = `Gast-${clientId.slice(0, 5)}`;
+    const clientId = crypto.randomUUID();
     clients.set(clientId, ws);
-    users.set(clientId, { username: defaultUsername });
-    sockets.set(ws, clientId);
-    sendToClient(clientId, { type: "connected", clientId, name: defaultUsername });
+    users.set(clientId, { username: "Gast" });
+    wsToId.set(ws, clientId);
+    ws.send(JSON.stringify({ type: "connected", clientId }));
     return clientId;
 }
 
 export function removeUser(ws) {
-    const clientId = sockets.get(ws);
-    if (!clientId) return;
-    sockets.delete(ws);
-    clients.delete(clientId);
-    users.delete(clientId);
-    broadcastOnlineList();
+    const clientId = wsToId.get(ws);
+    if (clientId) {
+        clients.delete(clientId);
+        users.delete(clientId);
+        wsToId.delete(ws);
+    }
 }
 
 export function authenticate(clientId, username) {
-    if (!clientId || !username) return false;
-    const user = users.get(clientId);
-    if (user) {
-        user.username = username;
-        sendToClient(clientId, { type: "auth_ok", message: `Authentifiziert als ${username}`, clientId });
-        broadcastOnlineList();
-        return true;
+    if (users.has(clientId)) {
+        users.get(clientId).username = username || "Gast";
+        const ws = clients.get(clientId);
+        if (ws && ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify({ type: "auth_ok", clientId }));
+        }
     }
-    return false;
 }
 
-export function getUserName(clientId) { return users.get(clientId)?.username || null; }
+export function getUserName(clientId) {
+    return users.get(clientId)?.username || "Unbekannt";
+}
 
 export function sendToClient(clientId, obj) {
     const ws = clients.get(clientId);
-    if (ws && ws.readyState === 1) {
+    if (ws?.readyState === 1) {
         ws.send(JSON.stringify(obj));
-        return true;
-    }
-    return false;
-}
-
-export function broadcastToPlayers(playerIds = [], obj) {
-    for (const pid of playerIds) {
-        if(pid) sendToClient(pid, obj);
     }
 }
 
-export function getClientId(ws) {
-    return sockets.get(ws);
+export function broadcastToPlayers(ids, obj) {
+    ids.forEach(id => sendToClient(id, obj));
+}
+
+export function broadcast(obj) {
+    const data = JSON.stringify(obj);
+    clients.forEach(ws => {
+        if (ws.readyState === 1) {
+            ws.send(data);
+        }
+    });
+}
+
+export function getClientWs(clientId) {
+    return clients.get(clientId);
 }

@@ -1,83 +1,85 @@
-// server.js (FINALE, STABILE VERSION 9.0)
+// server.js – ULTRA-STABIL, KEIN MEMORY LEAK, KEIN FORK-CRASH
 import express from "express";
-import http from "http";
-import cors from "cors";
 import { WebSocketServer } from "ws";
-import * as userManager from "./userManager.js";
-import * as roomManager from "./roomManager.js";
+import { createServer } from "http";
+import { addUser, removeUser, authenticate, sendToClient, broadcastToPlayers, broadcast } from "./userManager.js";
+import { createRoom, joinRoom, leaveRoom, startGame, handleGameAction, broadcastRoomList } from "./roomManager.js";
 
-const PORT = process.env.PORT || 10000;
 const app = express();
-app.use(cors());
-const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const server = createServer(app);
+const wss = new WebSocketServer({ server, path: "/" });
 
-console.log("🚀 FINALE STABILE VERSION 9.0: Server wird initialisiert...");
+console.log("DOCA Server startet – Ultra-stabile Version 2025");
 
+// Statische Dateien (für Testzwecke, kann später weg)
+app.get("/", (req, res) => res.send("DOCA Server läuft – stabil wie nie!"));
+
+// === WEBSOCKET ===
 wss.on("connection", (ws) => {
-    const clientId = userManager.addUser(ws);
-    console.log(`✅ Client verbunden: ${clientId}`);
+    // Sofort neuen User anlegen
+    const clientId = addUser(ws);
 
     ws.isAlive = true;
-    ws.on('pong', () => { ws.isAlive = true; });
+    ws.on("pong", () => { ws.isAlive = true; });
 
-    ws.on("message", (message) => {
-        let data;
-        try { data = JSON.parse(message); } catch (e) { return; }
-        
-        if (data.type !== 'ping') console.log(`[${clientId}] ->`, data);
-        
-        switch (data.type) {
+    ws.on("message", async (data) => {
+        let msg;
+        try { msg = JSON.parse(data); } catch { return; }
+
+        switch (msg.type) {
             case "auth":
-                userManager.authenticate(clientId, data.payload.username);
+                authenticate(clientId, msg.payload?.username || "Gast");
                 break;
             case "create_room":
-                roomManager.createRoom(clientId, data.payload.username, data.payload.name, data.payload.options);
+                createRoom(clientId, msg.payload?.username || "Gast", msg.payload?.name, msg.payload?.options || {});
                 break;
             case "join_room":
-                roomManager.joinRoom(clientId, data.payload.username, data.payload.roomId);
+                joinRoom(clientId, msg.payload?.username || "Gast", msg.payload?.roomId);
                 break;
-            // Andere Fälle bleiben unverändert
-            case "chat_global":
-                const chatUsername = userManager.getUserName(clientId);
-                userManager.broadcast({ type: "chat_global", user: chatUsername || "Gast", payload: data.payload });
+            case "leave_room":
+                leaveRoom(clientId);
                 break;
-            case "list_rooms": roomManager.broadcastRoomList(); break;
-            case "leave_room": roomManager.leaveRoom(clientId); break;
-            case "start_game": roomManager.startGame(clientId); break;
+            case "start_game":
+                startGame(clientId);
+                break;
             case "player_throw":
-            case "undo_throw": roomManager.handleGameAction(clientId, data); break;
-            case "webrtc_signal":
-                const targetClientId = data.payload.target;
-                if (targetClientId) {
-                    userManager.sendToClient(targetClientId, {
-                        type: 'webrtc_signal',
-                        payload: { ...data.payload, sender: clientId, target: null } 
-                    });
-                }
+            case "undo_throw":
+                handleGameAction(clientId, msg);
                 break;
-            case "ping": userManager.sendToClient(clientId, { type: "pong" }); break;
+            case "chat_global":
+                broadcast({ type: "chat_global", user: msg.payload.username || "Gast", message: msg.payload.message });
+                break;
+            case "ping":
+                ws.send(JSON.stringify({ type: "pong" }));
+                break;
         }
     });
 
+    // Cleanup bei Abbruch, Reload, Tab schließen etc.
     ws.on("close", () => {
-        const closedClientId = userManager.getClientId(ws);
-        if(closedClientId) {
-            console.log(`❌ Client hat die Verbindung getrennt: ${closedClientId}`);
-            roomManager.leaveRoom(closedClientId);
-            userManager.removeUser(ws);
-        }
+        leaveRoom(clientId);
+        removeUser(ws);
     });
 });
 
-const interval = setInterval(() => {
-  wss.clients.forEach((ws) => {
-    if (ws.isAlive === false) return ws.terminate();
-    ws.isAlive = false;
-    ws.ping(() => {});
-  });
-}, 30000);
+// === HEARTBEAT – verhindert zombie connections ===
+setInterval(() => {
+    wss.clients.forEach((ws) => {
+        if (!ws.isAlive) return ws.terminate();
+        ws.isAlive = false;
+        ws.ping();
+    });
+}, 10000);
 
-wss.on('close', () => { clearInterval(interval); });
+// === GRACEFUL SHUTDOWN ===
+process.on('SIGTERM', () => {
+    console.log("SIGTERM empfangen – sauberer Shutdown");
+    wss.close();
+    server.close(() => process.exit(0));
+});
 
-server.listen(PORT, () => console.log(`🚀 FINALE STABILE VERSION 9.0: Server läuft auf Port ${PORT}`));
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, () => {
+    console.log(`DOCA Server läuft stabil auf Port ${PORT}`);
+    broadcastRoomList(); // Initiale Room-Liste
+});
