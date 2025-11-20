@@ -1,19 +1,24 @@
-// server.js – KORRIGIERT: Switch-Anweisung ist jetzt vollständig und stabil.
+// server.js – FINALE VERSION: Robuste Initialisierung und Chat-Fix
 import express from "express";
 import { WebSocketServer } from "ws";
 import { createServer } from "http";
-import { addUser, removeUser, authenticate, sendToClient, broadcastOnlineList } from "./userManager.js";
+import { addUser, removeUser, authenticate, sendToClient, broadcast, broadcastOnlineList } from "./userManager.js";
 import { createRoom, joinRoom, leaveRoom, startGame, handleGameAction, broadcastRoomList } from "./roomManager.js";
 
 const app = express();
 const server = createServer(app);
-const wss = new WebSocketServer({ server, path: "/" });
+const wss = new WebSocketServer({ server });
 
-console.log("DOCA Server startet – Stabile Version (Build 2)");
+console.log("DOCA Server startet – Finale Version");
 
-app.get("/", (req, res) => res.send("DOCA Server läuft."));
+app.get("/", (req, res) => {
+  res.status(200).send("DOCA HTTP Server ist online.");
+});
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
+    const clientIp = req.socket.remoteAddress;
+    console.log(`✅ Client verbunden von IP: ${clientIp}`);
+    
     const clientId = addUser(ws);
     ws.isAlive = true;
     ws.on("pong", () => { ws.isAlive = true; });
@@ -23,78 +28,79 @@ wss.on("connection", (ws) => {
         try {
             msg = JSON.parse(data);
         } catch (err) {
-            console.error("Fehler beim Parsen von JSON:", err);
+            console.error(`Fehler beim Parsen von JSON von Client ${clientId}:`, err);
             return;
         }
 
         const payload = msg.payload || {};
-        const username = payload.username || payload.name || "Gast";
 
-        // Die switch-Anweisung wurde korrigiert und vervollständigt.
         switch (msg.type) {
-            case "auth":
-                authenticate(clientId, username);
+            case "auth": 
+                authenticate(clientId, payload.username); 
                 break;
-            case "list_rooms":
-                broadcastRoomList();
+            case "list_rooms": 
+                broadcastRoomList(); 
                 break;
-            case "list_online":
-                broadcastOnlineList();
+            case "list_online": 
+                broadcastOnlineList(); 
                 break;
-            case "create_room":
-                createRoom(clientId, username, payload.name || "Neuer Raum", payload.options || {});
+            case "create_room": 
+                createRoom(clientId, payload.username, payload.name || "Neuer Raum", payload.options || {}); 
                 break;
-            case "join_room":
-                joinRoom(clientId, username, payload.roomId);
+            case "join_room": 
+                joinRoom(clientId, payload.username, payload.roomId); 
                 break;
-            case "leave_room":
-                leaveRoom(clientId);
+            case "leave_room": 
+                leaveRoom(clientId); 
                 break;
-            case "start_game":
-                startGame(clientId); // Diese Funktion enthält jetzt die korrekte Logik
+            case "start_game": 
+                startGame(clientId); 
                 break;
             case "player_throw":
-            case "undo_throw":
-                handleGameAction(clientId, msg);
+            case "undo_throw": 
+                handleGameAction(clientId, msg); 
                 break;
             case "chat_global":
-                broadcast({ type: "chat_global", user: username, message: payload.message });
-                break;
-            case "ping":
-                ws.send(JSON.stringify({ type: "pong" }));
-                break;
-            case "webrtc_signal":
-                const target = msg.targetClientId || payload.targetClientId || payload.target;
-                if (target) {
-                    sendToClient(target, { type: "webrtc_signal", payload: payload, sender: clientId });
+                // KORREKTUR: Sicherstellen, dass die Chat-Nachricht korrekt verarbeitet wird
+                if (payload.message) {
+                    broadcast({ type: "chat_global", user: payload.username || "Gast", message: payload.message });
                 }
                 break;
-            default:
-                console.log("Unbekannte Nachricht empfangen:", msg.type);
+            case "ping": 
+                ws.send(JSON.stringify({ type: "pong" })); 
+                break;
+            case "webrtc_signal": 
+                const target = msg.targetClientId || payload.targetClientId || payload.target; 
+                if (target) { sendToClient(target, { type: "webrtc_signal", payload: payload, sender: clientId }); } 
+                break;
+            default: 
+                console.log(`Unbekannte Nachricht von ${clientId}:`, msg.type);
         }
     });
 
     ws.on("close", () => {
+        console.log(`Client ${clientId} hat die Verbindung getrennt.`);
         leaveRoom(clientId);
         removeUser(ws);
     });
 
     ws.on("error", (err) => {
         console.error(`WebSocket Fehler bei Client ${clientId}:`, err);
-        leaveRoom(clientId);
-        removeUser(ws);
     });
 });
 
 setInterval(() => {
     wss.clients.forEach((ws) => {
-        if (!ws.isAlive) return ws.terminate();
+        if (!ws.isAlive) {
+            console.log("Inaktiver Client wird getrennt.");
+            return ws.terminate();
+        }
         ws.isAlive = false;
         ws.ping();
     });
-}, 10000);
+}, 30000);
 
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
-    console.log(`DOCA Server läuft stabil auf Port ${PORT}`);
+    console.log(`🚀 DOCA Server ist bereit und hört auf Port ${PORT}`);
 });
