@@ -1,23 +1,20 @@
 // game.js (VOLLSTÄNDIG - mit korrigiertem Konstruktor)
 export default class Game {
-    constructor(players, options, startingPlayerId) { // NEU: startingPlayerId wird übergeben
-        this.players = players; // Array of clientIds
+    constructor(players, options, startingPlayerId) { // startingPlayerId wird vom roomManager übergeben
+        this.players = players.filter(p => p); // Nur aktive Spieler berücksichtigen
         this.options = { startingScore: 501, ...options };
         this.isStarted = true;
         this.winner = null;
         
-        // --- KORREKTUR: Startspieler wird hier festgelegt ---
-        const startIndex = startingPlayerId ? this.players.indexOf(startingPlayerId) : 0;
+        const startIndex = this.players.indexOf(startingPlayerId);
         this.currentPlayerIndex = (startIndex !== -1) ? startIndex : 0;
         
         this.scores = {};
         this.throwHistory = {};
 
-        players.forEach(pId => {
-            if (pId) {
-                this.scores[pId] = parseInt(this.options.startingScore);
-                this.throwHistory[pId] = [];
-            }
+        this.players.forEach(pId => {
+            this.scores[pId] = parseInt(this.options.startingScore);
+            this.throwHistory[pId] = [];
         });
     }
 
@@ -51,10 +48,7 @@ export default class Game {
         }
         this.scores[clientId] = newScore;
         this.throwHistory[clientId].push(points);
-        if (newScore === 0) {
-            this.winner = clientId;
-            return true;
-        }
+        if (newScore === 0) { this.winner = clientId; return true; }
         this.nextPlayer();
         return true;
     }
