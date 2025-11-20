@@ -35,13 +35,17 @@ export default class Game {
             return false;
         }
 
-        // The 'undo' action is special, as it can be triggered by the player who just threw,
-        // even if it's not their turn anymore.
         if (action.type === "undo_throw") {
-            return this.handleUndo(clientId);
+            // Undo kann nur vom Spieler ausgelöst werden, der den letzten Wurf gemacht hat.
+            const lastPlayerIndex = (this.currentPlayerIndex + this.players.length - 1) % this.players.length;
+            const lastPlayerId = this.players[lastPlayerIndex];
+            if (clientId === lastPlayerId) {
+                return this.handleUndo(clientId);
+            }
+            return false;
         }
 
-        // For all other actions, it must be the current player's turn.
+        // Für alle anderen Aktionen muss der Spieler an der Reihe sein.
         if (clientId !== this.players[this.currentPlayerIndex]) {
             return false;
         }
@@ -61,8 +65,8 @@ export default class Game {
         const currentScore = this.scores[clientId];
         const newScore = currentScore - points;
 
-        if (newScore < 0 || newScore === 1) { // Bust logic
-            this.throwHistory[clientId].push(0); // Record a bust as a score of 0
+        if (newScore < 0 || newScore === 1) { // Bust-Logik
+            this.throwHistory[clientId].push('BUST');
             this.nextPlayer();
             return true;
         }
@@ -70,39 +74,33 @@ export default class Game {
         this.scores[clientId] = newScore;
         this.throwHistory[clientId].push(points);
 
-        if (newScore === 0) { // Checkout logic
+        if (newScore === 0) { // Checkout
+            // Hier müsste noch die "Double Out"-Bedingung geprüft werden, falls implementiert.
             this.winner = clientId;
-            // Don't switch player on a winning throw
             return true;
         }
-
-        // Switch to the next player after every valid throw
+        
+        // Nach 3 Würfen (oder einem Wurf, je nach Regelwerk) Spieler wechseln
+        // Annahme: Ein "player_throw" ist eine Aufnahme von 3 Darts
         this.nextPlayer();
         return true;
     }
 
     handleUndo(clientId) {
-        // Determine who threw last. It's the player BEFORE the current one in the turn order.
         const lastPlayerIndex = (this.currentPlayerIndex + this.players.length - 1) % this.players.length;
         const lastPlayerId = this.players[lastPlayerIndex];
 
-        // Only the player who threw last can undo their throw.
-        if (clientId !== lastPlayerId) {
-            return false;
-        }
+        if (clientId !== lastPlayerId) return false;
+        if (!this.throwHistory[lastPlayerId] || this.throwHistory[lastPlayerId].length === 0) return false;
 
-        // Check if there is a throw to undo for that player.
-        if (!this.throwHistory[lastPlayerId] || this.throwHistory[lastPlayerId].length === 0) {
-            return false;
-        }
-
-        // Remove the last throw and add the points back to the score.
         const lastThrow = this.throwHistory[lastPlayerId].pop();
-        this.scores[lastPlayerId] += lastThrow;
+        if(lastThrow !== 'BUST') {
+            this.scores[lastPlayerId] += lastThrow;
+        }
 
-        // It is now that player's turn again.
+        // Den Spieler wieder an die Reihe setzen
         this.currentPlayerIndex = lastPlayerIndex;
-        this.winner = null; // Clear winner status in case the winning throw is undone.
+        this.winner = null;
         
         return true;
     }
