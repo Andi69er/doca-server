@@ -1,9 +1,10 @@
-// serverdaten/userManager.js – 100% FEHLERFREI, getestet, stabil + online_list
+// userManager.js – KORRIGIERT: 'broadcast' wird jetzt korrekt exportiert.
 const clients = new Map();     // clientId → ws
 const users   = new Map();      // clientId → { username }
 const wsToId  = new WeakMap();  // ws → clientId
 
-function broadcast(obj) {
+// Diese Funktion wird jetzt exportiert, damit andere Module sie nutzen können.
+export function broadcast(obj) {
     const data = JSON.stringify(obj);
     for (const ws of clients.values()) {
         if (ws.readyState === 1) { // WebSocket.OPEN

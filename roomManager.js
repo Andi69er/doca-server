@@ -96,17 +96,14 @@ export function startGame(clientId) {
     const roomId = userRooms.get(clientId);
     const room = rooms.get(roomId);
 
-    // Grundlegende Prüfungen: Raum muss existieren, darf nicht gestartet sein, 2 Spieler müssen da sein.
     if (!room || room.game || room.players.filter(Boolean).length !== 2) {
         return;
     }
     
-    // Ermitteln, wer laut den Raum-Optionen starten darf
     const ownerId = room.ownerId;
     const opponentId = room.players.find(p => p && p !== ownerId);
     let designatedStarter = null;
 
-    // Die "starter"-Option kommt aus dem Modal in der Lobby ("Ich", "Gegner", etc.)
     switch (room.options?.starter) {
         case 'Ich':
             designatedStarter = ownerId;
@@ -114,24 +111,20 @@ export function startGame(clientId) {
         case 'Gegner':
             designatedStarter = opponentId;
             break;
-        // Bei "Ausbullen" wird das Spiel nicht durch diesen Button-Klick gestartet.
-        // Daher wird hier bewusst kein Starter zugewiesen.
         case 'Ausbullen':
         default:
-            return; // Spielstart über diesen Weg nicht erlaubt
+             // Bei "Ausbullen" darf jeder starten, da es nur die Routine initiiert.
+             // Wenn Sie das nicht wollen, entfernen Sie die nächsten Zeilen.
+             // Zur Sicherheit lasse ich es erstmal so, dass nur der Owner den Bull-Start auslösen kann.
+            designatedStarter = ownerId; 
+            break;
     }
 
-    // *** ZENTRALE PRÜFUNG ***
-    // Nur wenn der Client, der die "start_game" Nachricht gesendet hat, der
-    // designierte Starter ist, wird das Spiel tatsächlich gestartet.
     if (clientId === designatedStarter) {
         const gamePlayers = room.players.filter(Boolean);
-        
-        // Sicherstellen, dass der `designatedStarter` an erster Stelle im `players`-Array für das Spiel steht,
-        // damit die Game-Klasse (die mit Index 0 startet) korrekt funktioniert.
         const sortedPlayers = [...gamePlayers].sort((a, b) => {
-            if (a === designatedStarter) return -1; // a kommt vor b
-            if (b === designatedStarter) return 1;  // b kommt vor a
+            if (a === designatedStarter) return -1;
+            if (b === designatedStarter) return 1;
             return 0;
         });
 
@@ -150,7 +143,7 @@ export function handleGameAction(clientId, action) {
     if (room && room.game && room.game.handleAction(clientId, action)) {
         broadcastToPlayers(room.players.filter(Boolean), getState(room));
         if (room.game.winner) {
-            broadcastRoomList(); // Raumliste aktualisieren, um "isStarted" zu ändern
+            broadcastRoomList();
         }
     }
 }
