@@ -30,7 +30,7 @@ wss.on("connection", (ws, req) => {
                 userManager.broadcast({ type: "chat_global", user: username || "Gast", payload: data.payload });
                 break;
             case "list_rooms": roomManager.broadcastRoomList(); break;
-            case "start_game": roomManager.startGame(clientId); break; // **KORREKTUR: payload wird nicht mehr benötigt**
+            case "start_game": roomManager.startGame(clientId); break; // Payload wird hier nicht benötigt
             case "player_throw":
             case "undo_throw": roomManager.handleGameAction(clientId, data); break;
             case "webrtc_signal":

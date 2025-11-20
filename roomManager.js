@@ -1,4 +1,4 @@
-// roomManager.js (VOLLSTÄNDIG - mit korrigierter startGame Funktion)
+// roomManager.js (VOLLSTÄNDIG - mit korrigierter Join- & Start-Logik)
 import { broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
 
@@ -40,22 +40,31 @@ export function createRoom(clientId, ownerUsername, name, options) {
     sendToClient(clientId, { type: "room_created", roomId });
 }
 
+// **KORRIGIERTE JOIN-LOGIK**
 export function joinRoom(clientId, username, roomId) {
     const room = rooms.get(roomId);
     if (!room) return;
-    if (roomDeletionTimers.has(roomId)) {
-        clearTimeout(roomDeletionTimers.get(roomId));
-        roomDeletionTimers.delete(roomId);
+    if (roomDeletionTimers.has(roomId)) { clearTimeout(roomDeletionTimers.get(roomId)); roomDeletionTimers.delete(roomId); }
+
+    // Logik für Wiederbeitritt und neuen Spieler
+    let playerIndex = room.players.indexOf(clientId);
+    if (playerIndex === -1) { // Nicht bereits im Raum, also neuen Platz suchen
+        playerIndex = room.players.indexOf(null);
     }
-    const emptyIndex = room.playerNames.indexOf(null);
-    if (emptyIndex !== -1) {
-        room.players[emptyIndex] = clientId;
-        room.playerNames[emptyIndex] = username;
+    
+    if (playerIndex !== -1) {
+        room.players[playerIndex] = clientId;
+        room.playerNames[playerIndex] = username;
         userRooms.set(clientId, roomId);
+    } else {
+        return; // Raum ist voll
     }
-    broadcastToPlayers(room.players.filter(p=>p), getFullRoomState(room));
+    
+    // Sende den aktuellen Stand an ALLE Spieler im Raum, um Namen zu synchronisieren
+    broadcastToPlayers(room.players.filter(p => p), getFullRoomState(room));
     broadcastRoomList();
 }
+
 
 export function leaveRoom(clientId) {
     const roomId = userRooms.get(clientId);
@@ -63,8 +72,14 @@ export function leaveRoom(clientId) {
     const room = rooms.get(roomId);
     const playerIndex = room.players.indexOf(clientId);
     if (playerIndex !== -1) {
-        room.players[playerIndex] = null;
+        room.players[playerIndex] = null; // Client-ID entfernen, aber Platz reserviert lassen
         userRooms.delete(clientId);
+        
+        // Informiere den verbleibenden Spieler
+        broadcastToPlayers(room.players.filter(p => p), getFullRoomState(room));
+        broadcastRoomList();
+
+        // Starte Timer zum Löschen, wenn der Raum komplett leer ist
         if (room.players.every(p => p === null)) {
             const timer = setTimeout(() => {
                 rooms.delete(roomId);
@@ -72,10 +87,7 @@ export function leaveRoom(clientId) {
                 broadcastRoomList();
             }, 15000);
             roomDeletionTimers.set(roomId, timer);
-        } else {
-            broadcastToPlayers(room.players.filter(p=>p), getFullRoomState(room));
         }
-        broadcastRoomList();
     }
 }
 
@@ -83,28 +95,29 @@ export function startGame(clientId) {
     const room = userRooms.has(clientId) ? rooms.get(userRooms.get(clientId)) : null;
     if (!room) return;
     
-    // --- KORREKTUR: Server entscheidet, wer beginnt, basierend auf den Raum-Optionen ---
     const amOwner = clientId === room.ownerId;
     const starterChoice = room.options.starter;
+
+    // Serverseitige Prüfung, wer starten darf
     let canStart = false;
     if (starterChoice === 'Gegner' && !amOwner) canStart = true;
-    if (starterChoice !== 'Gegner' && amOwner) canStart = true;
-    if (!canStart) return; // Falscher Spieler hat geklickt
+    if (starterChoice !== 'Gegner' && amOwner) canStart = true; // "Ich" oder "Ausbullen"
+    if (!canStart || room.players.filter(p => p).length < 2) return;
 
-    let startingPlayerId = room.ownerId; // Default "Ich"
+    let startingPlayerId = room.ownerId; // Default für "Ich"
     if (starterChoice === 'Gegner') {
         startingPlayerId = room.players.find(p => p !== room.ownerId);
     }
-    // "Ausbullen" würde hier eine andere Logik erfordern, startet aber erstmal mit dem Owner
+    // "Ausbullen" würde hier eine andere Logik starten, für jetzt startet der Owner
     
-    room.game = new Game(room.players, room.options, startingPlayerId); // startingPlayerId wird übergeben
-    broadcastToPlayers(room.players.filter(p=>p), getFullRoomState(room));
+    room.game = new Game(room.players, room.options, startingPlayerId); // Übergabe des Startspielers
+    broadcastToPlayers(room.players.filter(p => p), getFullRoomState(room));
 }
 
 
 export function handleGameAction(clientId, action) {
     const room = userRooms.has(clientId) ? rooms.get(userRooms.get(clientId)) : null;
     if (room?.game?.handleAction(clientId, action)) {
-        broadcastToPlayers(room.players.filter(p=>p), getFullRoomState(room));
+        broadcastToPlayers(room.players.filter(p => p), getFullRoomState(room));
     }
 }
