@@ -1,33 +1,23 @@
-// roomManager.js (FINALE, STABILE VERSION 11.0 - Mit Spieldetails)
+// roomManager.js (FINALE, STABILE VERSION 12.0 - Robuste Start-Logik)
 import { broadcast, broadcastToPlayers, sendToClient } from "./userManager.js";
 import Game from "./game.js";
 
 const rooms = new Map();
-const userRooms = new Map(); // clientId -> roomId
-const roomDeletionTimers = new Map(); // roomId -> timerId
+const userRooms = new Map();
+const roomDeletionTimers = new Map();
 
 export function broadcastRoomList() {
     const roomList = Array.from(rooms.values()).map(r => {
-        // NEU: Funktion zum Erstellen der Spiel-Info
         let gameInfo = 'Unbekannt';
         if (r.options) {
-            if (r.options.variant === 'cricket') {
-                gameInfo = 'Cricket';
-            } else {
-                const finish = r.options.finish?.toLowerCase().includes('double') ? 'DO' : 'SO';
-                gameInfo = `${r.options.distance} ${finish}`;
-            }
+            if (r.options.variant === 'cricket') gameInfo = 'Cricket';
+            else gameInfo = `${r.options.distance || 501} ${r.options.finish?.includes('Double') ? 'DO' : 'SO'}`;
         }
-
         return {
-            id: r.id,
-            name: r.name,
-            owner: r.ownerUsername,
+            id: r.id, name: r.name, owner: r.ownerUsername,
             playerCount: r.playerNames.filter(p => p).length,
-            maxPlayers: r.maxPlayers,
-            isStarted: !!r.game?.isStarted,
-            variant: r.options.variant || 'x01',
-            gameInfo: gameInfo // NEU: Diese Zeile wurde hinzugefügt
+            maxPlayers: r.maxPlayers, isStarted: !!r.game?.isStarted,
+            variant: r.options.variant || 'x01', gameInfo
         };
     });
     broadcast({ type: "room_update", rooms: roomList });
@@ -35,29 +25,23 @@ export function broadcastRoomList() {
 
 function getFullRoomState(room) {
     if (!room) return null;
-    const gameState = room.game ? room.game.getState() : {};
     return {
         type: "game_state",
         id: room.id, name: room.name, ownerId: room.ownerId,
-        players: room.players,
-        playerNames: room.playerNames,
-        maxPlayers: room.maxPlayers,
-        options: room.options, ...gameState,
+        players: room.players, playerNames: room.playerNames,
+        maxPlayers: room.maxPlayers, options: room.options,
+        ...(room.game ? room.game.getState() : {})
     };
 }
 
 export function createRoom(clientId, ownerUsername, name, options) {
-    if (!ownerUsername) return;
-    if (userRooms.has(clientId)) leaveRoom(clientId);
+    if (!ownerUsername || userRooms.has(clientId)) return;
     const roomId = Math.random().toString(36).slice(2, 9);
     const room = {
         id: roomId, name: name || `Raum von ${ownerUsername}`,
         ownerId: clientId, ownerUsername: ownerUsername,
-        players: [clientId, null],
-        playerNames: [ownerUsername, null],
-        maxPlayers: 2,
-        options: { ...options, startingScore: options.distance, variant: options.variant }, // Variante hinzugefügt
-        game: null,
+        players: [clientId, null], playerNames: [ownerUsername, null],
+        maxPlayers: 2, options, game: null
     };
     rooms.set(roomId, room);
     userRooms.set(clientId, roomId);
@@ -66,52 +50,44 @@ export function createRoom(clientId, ownerUsername, name, options) {
 }
 
 export function joinRoom(clientId, username, roomId) {
-    if (!username) return;
     const room = rooms.get(roomId);
     if (!room) return;
 
     if (roomDeletionTimers.has(roomId)) {
         clearTimeout(roomDeletionTimers.get(roomId));
         roomDeletionTimers.delete(roomId);
-        console.log(`Lösch-Timer für Raum ${roomId} abgebrochen.`);
     }
-
     const playerIndex = room.playerNames.indexOf(username);
     if (playerIndex !== -1) {
         room.players[playerIndex] = clientId;
-        if(room.ownerUsername === username) room.ownerId = clientId;
-        userRooms.set(clientId, roomId);
+        if (room.ownerUsername === username) room.ownerId = clientId;
     } else {
-        const emptyIndex = room.playerNames.indexOf(null);
+        const emptyIndex = room.players.indexOf(null);
         if (emptyIndex !== -1) {
             room.players[emptyIndex] = clientId;
             room.playerNames[emptyIndex] = username;
-            userRooms.set(clientId, roomId);
         }
     }
-    broadcastToPlayers(room.players, getFullRoomState(room));
+    userRooms.set(clientId, roomId);
+    broadcastToPlayers(room.players.filter(p => p), getFullRoomState(room));
     broadcastRoomList();
 }
 
 export function leaveRoom(clientId) {
     const roomId = userRooms.get(clientId);
-    if (!roomId || !rooms.has(roomId)) return;
     const room = rooms.get(roomId);
-    const playerIndex = room.players.indexOf(clientId);
+    if (!room) return;
 
+    const playerIndex = room.players.indexOf(clientId);
     if (playerIndex !== -1) {
-        room.players[playerIndex] = null;
+        room.players[playerIndex] = null; // Behalte den Namen, aber entferne die ClientId
         userRooms.delete(clientId);
         
         if (room.players.every(p => p === null)) {
-            console.log(`Raum ${roomId} ist leer. Starte 15-Sekunden-Lösch-Timer.`);
             const timer = setTimeout(() => {
-                if (room.players.every(p => p === null)) {
-                    rooms.delete(roomId);
-                    console.log(`Raum ${roomId} nach Inaktivität endgültig gelöscht.`);
-                    broadcastRoomList();
-                }
+                rooms.delete(roomId);
                 roomDeletionTimers.delete(roomId);
+                broadcastRoomList();
             }, 15000);
             roomDeletionTimers.set(roomId, timer);
         } else {
@@ -123,15 +99,27 @@ export function leaveRoom(clientId) {
 
 export function startGame(clientId, payload) {
     const room = userRooms.has(clientId) ? rooms.get(userRooms.get(clientId)) : null;
-    if (!room || room.ownerId !== clientId || room.players.filter(p=>p).length < 2) return;
-    
-    // Use startingPlayer from payload if available, otherwise default logic
-    const startingPlayer = payload?.startingPlayer || room.players[0];
-    room.game = new Game(room.players, room.options, startingPlayer);
-    
-    broadcastToPlayers(room.players, getFullRoomState(room));
-}
+    if (!room || room.players.filter(p=>p).length < 2) return;
 
+    // --- KORRIGIERTE SERVER-SEITIGE PRÜFUNG ---
+    const amIOwner = clientId === room.ownerId;
+    const starterOption = room.options.starter || 'Ich';
+    let canStart = false;
+    if ((starterOption === 'Ich' || starterOption === 'Ausbullen') && amIOwner) canStart = true;
+    if (starterOption === 'Gegner' && !amIOwner) canStart = true;
+    
+    if (canStart) {
+        // Wer tatsächlich beginnt, wird vom Game-Objekt gehandhabt (oder hier explizit gesetzt)
+        let startingPlayerId = room.players[0]; // Default: Owner
+        if(starterOption === 'Gegner') {
+            startingPlayerId = room.players.find(p => p !== room.ownerId);
+        }
+        // "Ausbullen" Logik würde hier eine andere Sequenz starten
+        
+        room.game = new Game(room.players, room.options, startingPlayerId);
+        broadcastToPlayers(room.players.filter(p => p), getFullRoomState(room));
+    }
+}
 
 export function handleGameAction(clientId, action) {
     const room = userRooms.has(clientId) ? rooms.get(userRooms.get(clientId)) : null;
