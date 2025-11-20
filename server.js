@@ -1,4 +1,4 @@
-// server.js (FINALE, STABILE VERSION 13.0 - mit Fehlerbehandlung)
+// server.js (VOLLSTÄNDIG)
 import express from "express";
 import http from "http";
 import cors from "cors";
@@ -12,12 +12,8 @@ app.use(cors());
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-console.log("🚀 DOCA Server v13.0 wird initialisiert...");
-
-// Bei einer neuen Verbindung wird jetzt auch das 'request'-Objekt übergeben
 wss.on("connection", (ws, req) => {
-    const clientId = userManager.addUser(ws, req); // req wird für die IP-Adresse benötigt
-
+    const clientId = userManager.addUser(ws, req);
     ws.isAlive = true;
     ws.on('pong', () => { ws.isAlive = true; });
 
@@ -25,30 +21,16 @@ wss.on("connection", (ws, req) => {
         let data;
         try { data = JSON.parse(message); } catch (e) { return; }
         
-        // Logge alle eingehenden Nachrichten außer Ping
-        if (data.type !== 'ping') {
-            const username = userManager.getUserName(clientId) || 'unbekannt';
-            console.log(`[${username} | ${clientId.slice(0,5)}] ->`, data.type, data.payload || '');
-        }
-        
         switch (data.type) {
-            case "auth":
-                userManager.authenticate(clientId, data.payload.username);
-                break;
-            case "create_room":
-                roomManager.createRoom(clientId, data.payload.username, data.payload.name, data.payload.options);
-                break;
-            case "join_room":
-                roomManager.joinRoom(clientId, data.payload.username, data.payload.roomId);
-                break;
+            case "auth": userManager.authenticate(clientId, data.payload.username); break;
+            case "create_room": roomManager.createRoom(clientId, data.payload.username, data.payload.name, data.payload.options); break;
+            case "join_room": roomManager.joinRoom(clientId, data.payload.username, data.payload.roomId); break;
             case "chat_global":
-                const chatUsername = userManager.getUserName(clientId);
-                userManager.broadcast({ type: "chat_global", user: chatUsername || "Gast", payload: data.payload });
+                const username = userManager.getUserName(clientId);
+                userManager.broadcast({ type: "chat_global", user: username || "Gast", payload: data.payload });
                 break;
             case "list_rooms": roomManager.broadcastRoomList(); break;
-            case "list_online": userManager.broadcastOnlineList(); break;
-            case "leave_room": roomManager.leaveRoom(clientId); break;
-            case "start_game": roomManager.startGame(clientId, data.payload); break;
+            case "start_game": roomManager.startGame(clientId); break; // **KORREKTUR: payload wird nicht mehr benötigt**
             case "player_throw":
             case "undo_throw": roomManager.handleGameAction(clientId, data); break;
             case "webrtc_signal":
@@ -60,7 +42,6 @@ wss.on("connection", (ws, req) => {
                     });
                 }
                 break;
-            case "ping": userManager.sendToClient(clientId, { type: "pong" }); break;
         }
     });
 
@@ -75,16 +56,11 @@ wss.on("connection", (ws, req) => {
 
 const interval = setInterval(() => {
   wss.clients.forEach((ws) => {
-    if (ws.isAlive === false) {
-        const clientId = userManager.getClientId(ws);
-        console.log(`💔 Inaktiver Client ${clientId} wird getrennt.`);
-        return ws.terminate();
-    }
+    if (ws.isAlive === false) return ws.terminate();
     ws.isAlive = false;
     ws.ping(() => {});
   });
 }, 30000);
-
 wss.on('close', () => { clearInterval(interval); });
 
-server.listen(PORT, () => console.log(`🚀 Server v13.0 läuft auf Port ${PORT}`));
+server.listen(PORT, () => console.log(`Server läuft auf Port ${PORT}`));

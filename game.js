@@ -1,19 +1,22 @@
-// game.js (REBUILT FROM STABLE BASE)
+// game.js (VOLLSTÄNDIG - mit korrigiertem Konstruktor)
 export default class Game {
-    constructor(players, options) {
+    constructor(players, options, startingPlayerId) { // NEU: startingPlayerId wird übergeben
         this.players = players; // Array of clientIds
         this.options = { startingScore: 501, ...options };
         this.isStarted = true;
         this.winner = null;
-        this.currentPlayerIndex = 0;
+        
+        // --- KORREKTUR: Startspieler wird hier festgelegt ---
+        const startIndex = startingPlayerId ? this.players.indexOf(startingPlayerId) : 0;
+        this.currentPlayerIndex = (startIndex !== -1) ? startIndex : 0;
         
         this.scores = {};
-        this.throwHistory = {}; // Persistent history for the game
+        this.throwHistory = {};
 
         players.forEach(pId => {
             if (pId) {
                 this.scores[pId] = parseInt(this.options.startingScore);
-                this.throwHistory[pId] = []; // Initialize history for each player
+                this.throwHistory[pId] = [];
             }
         });
     }
@@ -31,57 +34,27 @@ export default class Game {
     }
 
     handleAction(clientId, action) {
-        if (this.winner) {
-            return false;
-        }
-
-        if (action.type === "undo_throw") {
-            // Undo kann nur vom Spieler ausgelöst werden, der den letzten Wurf gemacht hat.
-            const lastPlayerIndex = (this.currentPlayerIndex + this.players.length - 1) % this.players.length;
-            const lastPlayerId = this.players[lastPlayerIndex];
-            if (clientId === lastPlayerId) {
-                return this.handleUndo(clientId);
-            }
-            return false;
-        }
-
-        // Für alle anderen Aktionen muss der Spieler an der Reihe sein.
-        if (clientId !== this.players[this.currentPlayerIndex]) {
-            return false;
-        }
-        
-        if (action.type === "player_throw") {
-            return this.handleThrow(clientId, action.payload.points);
-        }
-
+        if (this.winner) return false;
+        if (action.type === "undo_throw") return this.handleUndo(clientId);
+        if (clientId !== this.players[this.currentPlayerIndex]) return false;
+        if (action.type === "player_throw") return this.handleThrow(clientId, action.payload.points);
         return false;
     }
 
     handleThrow(clientId, points) {
-        if (typeof points !== 'number' || points < 0 || points > 180) {
-            return false;
-        }
-
-        const currentScore = this.scores[clientId];
-        const newScore = currentScore - points;
-
-        if (newScore < 0 || newScore === 1) { // Bust-Logik
+        if (typeof points !== 'number' || points < 0 || points > 180) return false;
+        const newScore = this.scores[clientId] - points;
+        if (newScore < 0 || newScore === 1) { // Bust
             this.throwHistory[clientId].push('BUST');
             this.nextPlayer();
             return true;
         }
-
         this.scores[clientId] = newScore;
         this.throwHistory[clientId].push(points);
-
-        if (newScore === 0) { // Checkout
-            // Hier müsste noch die "Double Out"-Bedingung geprüft werden, falls implementiert.
+        if (newScore === 0) {
             this.winner = clientId;
             return true;
         }
-        
-        // Nach 3 Würfen (oder einem Wurf, je nach Regelwerk) Spieler wechseln
-        // Annahme: Ein "player_throw" ist eine Aufnahme von 3 Darts
         this.nextPlayer();
         return true;
     }
@@ -89,19 +62,11 @@ export default class Game {
     handleUndo(clientId) {
         const lastPlayerIndex = (this.currentPlayerIndex + this.players.length - 1) % this.players.length;
         const lastPlayerId = this.players[lastPlayerIndex];
-
-        if (clientId !== lastPlayerId) return false;
-        if (!this.throwHistory[lastPlayerId] || this.throwHistory[lastPlayerId].length === 0) return false;
-
+        if (clientId !== lastPlayerId || !this.throwHistory[lastPlayerId]?.length) return false;
         const lastThrow = this.throwHistory[lastPlayerId].pop();
-        if(lastThrow !== 'BUST') {
-            this.scores[lastPlayerId] += lastThrow;
-        }
-
-        // Den Spieler wieder an die Reihe setzen
+        if(lastThrow !== 'BUST') this.scores[lastPlayerId] += lastThrow;
         this.currentPlayerIndex = lastPlayerIndex;
         this.winner = null;
-        
         return true;
     }
 
