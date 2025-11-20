@@ -1,17 +1,15 @@
 {
-  "name": "doca-server-stable",
-  "version": "2.5.0",
-  "description": "DOCA WebDarts–Ultra-stabiler Server (Angepasste Version)",
+  "name": "doca-server",
+  "version": "1.0.0",
+  "description": "DOCA WebDarts Server",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js"
   },
-  "engines": {
-    "node": ">=18.x"
-  },
   "dependencies": {
-    "express": "^4.19.2",
-    "ws": "^8.17.1"
+    "express": "^4.18.2",
+    "ws": "^8.12.0",
+    "cors": "^2.8.5"
   }
 }
