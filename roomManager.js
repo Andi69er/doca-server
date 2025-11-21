@@ -11,6 +11,7 @@ export function broadcastRoomList() {
         id: r.id, name: r.name, owner: r.ownerUsername,
         playerCount: r.playerNames.filter(p => p).length,
         maxPlayers: r.maxPlayers, isStarted: !!r.game?.isStarted,
+        options: r.options,
     }));
     broadcast({ type: "room_update", rooms: roomList });
 }
