@@ -11,6 +11,7 @@ export function broadcastRoomList() {
         id: r.id, name: r.name, owner: r.ownerUsername,
         playerCount: r.playerNames.filter(p => p).length,
         maxPlayers: r.maxPlayers, isStarted: !!r.game?.isStarted,
+        variant: r.options.variant,
         options: r.options,
     }));
     broadcast({ type: "room_update", rooms: roomList });
@@ -34,24 +35,11 @@ export function createRoom(clientId, ownerUsername, name, options) {
     if (userRooms.has(clientId)) leaveRoom(clientId);
     const roomId = Math.random().toString(36).slice(2, 9);
     const room = {
-        id: roomId, 
-        name: name || `Raum von ${ownerUsername}`,
-        ownerId: clientId, 
-        ownerUsername: ownerUsername,
+        id: roomId, name: name || `Raum von ${ownerUsername}`,
+        ownerId: clientId, ownerUsername: ownerUsername,
         players: [clientId, null],
         playerNames: [ownerUsername, null],
-        maxPlayers: 2, 
-        options: { 
-            ...options, 
-            startingScore: options.distance,
-            // Neue Felder
-            bestOf: options.bestOf,
-            firstTo: options.firstTo,
-            sets: options.sets,
-            legsPerSet: options.legsPerSet,
-            gameMode: options.gameMode
-        }, 
-        game: null,
+        maxPlayers: 2, options: { ...options, startingScore: parseInt(options.startScore) || 501 }, game: null,
     };
     rooms.set(roomId, room);
     userRooms.set(clientId, roomId);
